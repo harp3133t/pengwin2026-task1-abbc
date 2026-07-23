@@ -1,11 +1,11 @@
 ================================================================
 Grand Challenge - "Create Algorithm for Challenge" form fill
-PENGWIN 2026 Task 1 Submission (V2.0 target-family router)
+PENGWIN 2026 Task 1 Submission (V2.6 updated-data checkpoints)
 ================================================================
 
 [Title] (single line, method identifier)
 ----------------------------------------------------------------
-Anatomy-Routed ABBC-Affinity STU-Net Cascade (PENGWIN-Auto V2.0)
+Anatomy-Routed ABBC-Affinity STU-Net Cascade (PENGWIN-Auto V2.6)
 ----------------------------------------------------------------
 (method-level; reusable across container versions)
 
@@ -16,11 +16,11 @@ Pelvic and femoral fracture fragment instance segmentation in CT.
 
 Two-stage cascade (two STU-Net-B models, loaded serially on one GPU):
 1. Anatomy — Dataset539_PelvicFemurAnatomyV3 runs on the full CT, labelling Sacrum, Left/Right Hipbone and Femur (5-class).
-2. Target-family routing — a lightweight random-forest router packaged with the model payload predicts pelvic vs femur from CT/FOV/bone-geometry features. Pelvic cases forward only Sacrum+LeftHip+RightHip to Stage B; femur cases forward only Femur.
-3. Fracture — Dataset538 V308 ABBC+affinity STU-Net runs per target ROI using bone-LUT CT plus routing-derived anatomy context. It emits ABBC channels plus learned same-instance affinities.
+2. Target-family routing — the pelvic/femur decision functions published by the PENGWIN organizers select the case family. Pelvic cases forward only Sacrum+LeftHip+RightHip to Stage B; femur cases forward only Femur.
+3. Fracture — Dataset538 V308 ABBC+affinity STU-Net runs per target ROI using CT only. Stage-A anatomy is used only to localize the ROI. It emits ABBC channels plus learned same-instance affinities.
 4. Decoding — average-linkage agglomeration yields instance masks; ~1 cm^3 components are pruned and outputs are remapped to the official PENGWIN label ranges.
 
-Backbone STU-Net-B (Apache-2.0) warm-started from a TotalSegmentator bone pretrain. Femur is fully modelled. V2.0 keeps the v1.5 STU-Net weights unchanged and only adds the post-anatomy target-family router.
+Backbone STU-Net-B (Apache-2.0) warm-started from a TotalSegmentator bone pretrain. Femur is fully modelled. V2.6 deploys V301 and V308 fold-0 checkpoints retrained after rebuilding the refreshed official PENGWIN dataset; architecture, decoder, thresholds and post-processing remain unchanged.
 
 Output: PENGWIN label map (0 bg; 1-50 sacrum; 51-100 L hip; 101-150 R hip; 151-200 femur).
 

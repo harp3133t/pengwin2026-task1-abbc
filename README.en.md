@@ -16,6 +16,30 @@ cascade** on a **STU-Net-B** backbone, I/O-compatible with the official
 
 ---
 
+## Current submission candidate — v2.6 updated-data checkpoints (2026-07-24)
+
+| | |
+|---|---|
+| **Code** | the verified v2.5 official pelvic/femur case router |
+| **Stage A** | `V301` fold 0, retrained after rebuilding the refreshed dataset |
+| **Stage B** | `V308` fold 0, retrained after rebuilding the refreshed dataset |
+| **Unchanged** | STU-Net-B architecture, trainer recipe, affinity decoder, `AGGLO_T=0.45`, post-processing, and I/O |
+| **Release tag** | `v2.6-newdata` |
+
+End-to-end evaluation on the same refreshed fold-0 set of 68 cases produced
+Fracture Dice `0.887390`, HD95 `3.630712 mm`, Instance Recall `0.949466`,
+Precision `0.910110`, and F1 `0.914869` with the official-aligned local proxy.
+These are not hidden-test Grand Challenge results.
+
+Checkpoint SHA-256:
+
+- V301: `0d52f0fa41a69462d9ff757fb9417e70d1101104a896e5f4ed709b4ea2566509`
+- V308: `66c1b47d9df250add49bff9997c373be949653a6f9651a281081be896d53534c`
+
+See [`docs/description.md`](docs/description.md) for the submission description.
+
+---
+
 ## Current version — organizers' updated pelvic/femur case router (2026-07-23)
 
 | | |

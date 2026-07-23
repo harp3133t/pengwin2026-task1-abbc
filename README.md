@@ -14,6 +14,30 @@
 
 ---
 
+## 🚀 현재 제출 후보 (2026-07-24, **v2.6 신규 데이터 재학습**)
+
+| | |
+|---|---|
+| **코드** | v2.5의 검증된 공식 pelvic/femur case router와 동일 |
+| **Stage A** | 신규 데이터로 재학습한 `V301` fold 0 |
+| **Stage B** | 신규 데이터로 재학습한 `V308` fold 0 |
+| **변경하지 않은 항목** | STU-Net-B 구조, trainer recipe, affinity decoder, `AGGLO_T=0.45`, 후처리, I/O |
+| **예정 태그** | `v2.6-newdata` |
+
+동일한 갱신 fold-0 68 cases의 end-to-end official-aligned 로컬 평가에서
+Fracture Dice `0.887390`, HD95 `3.630712 mm`, Instance Recall `0.949466`,
+Precision `0.910110`, F1 `0.914869`를 기록했다. 실제 Grand Challenge 비공개
+서버 점수가 아닌 로컬 재현 지표다.
+
+체크포인트 SHA-256:
+
+- V301: `0d52f0fa41a69462d9ff757fb9417e70d1101104a896e5f4ed709b4ea2566509`
+- V308: `66c1b47d9df250add49bff9997c373be949653a6f9651a281081be896d53534c`
+
+상세 제출 설명은 [`docs/description.md`](docs/description.md)를 참고한다.
+
+---
+
 ## 🚀 현재 배포 상태 (2026-07-23, **공식 pelvic/femur 라우터 반영**)
 
 > **2026-07-22 조직위 업데이트 적용.** 추론 시작 시 공지에 게시된

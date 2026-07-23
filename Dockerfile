@@ -41,6 +41,11 @@ RUN pip install --upgrade pip && \
 COPY inference /opt/app/inference
 COPY code_task1 /opt/app/code_task1
 
+# A repository checkout can inherit a restrictive umask. Grand Challenge runs
+# as the non-root `user`, so normalize copied source permissions explicitly
+# instead of depending on host checkout modes.
+RUN chmod -R a+rX /opt/app/inference /opt/app/code_task1
+
 # --- nnUNet trainer-discovery shim -----------------------------------------
 # nnUNet v2 discovers trainer classes by walking
 # `nnunetv2/training/nnUNetTrainer/`. Our PengwinTrainer*ABBCV291 lives in
@@ -71,9 +76,10 @@ ENV PENGWIN_ROOT=/opt/ml/model \
     MPLCONFIGDIR=/tmp/matplotlib \
     XDG_CACHE_HOME=/tmp/.cache
 
-# Stage-A V301 fold_0 and Stage-B V308 fold_0 stay unchanged. Pelvic vs femur
-# routing uses the organizers' concrete SimpleITK/NumPy-axis rule directly in
-# inference.py. The legacy random-forest router is intentionally disabled.
+# The model payload is uploaded separately. The v2.6 payload contains V301 fold_0
+# and V308 fold_0 checkpoints retrained from the refreshed official data. Pelvic
+# vs femur routing uses the organizers' concrete SimpleITK/NumPy-axis rule
+# directly in inference.py. The legacy random-forest router is disabled.
 ENV PENGWIN_DS538_TRAINER=PengwinTrainerSTUNetBaseAffinityV308 \
     PENGWIN_DS538_FOLD=0 \
     PENGWIN_DS538_OUT_CH=13 \
