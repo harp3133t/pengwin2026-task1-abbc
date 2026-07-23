@@ -16,18 +16,18 @@ cascade** on a **STU-Net-B** backbone, I/O-compatible with the official
 
 ---
 
-## Current version — v2.0 target-family router
+## Current version — organizers' updated pelvic/femur case router (2026-07-23)
 
 | | |
 |---|---|
-| **Version** | **v2.0** — v1.5 cascade plus a lightweight target-family router |
+| **Version** | Stage A/B cascade plus the concrete Task 1/2 routing functions published by the organizers on 2026-07-22 |
 | **Stage A/B weights** | unchanged: Stage A `V301` fold0 anatomy STU-Net + Stage B `V308` fold0 ABBC-affinity STU-Net |
-| **New router** | CT-geometry random-forest router predicts `pelvic` vs `femur` after Stage A, then only forwards the target family to Stage B |
-| **Router artifact** | `stage1_router/stage1_target_router_fold0.joblib` (local artifact, ignored by git; package/upload with model payload when deploying) |
+| **Current router** | the published `get_image_info()` axis mapping and `classify_pelvic_femur()` decision tree run before inference, then only forward the selected family to Stage B |
+| **Router artifact** | none; the legacy random-forest joblib is no longer required for deployment |
 | **Why** | prevents wrong-family Stage2 calls, e.g. femur fragments in pelvic-only cases or hip/pelvis fragments in femur-only cases |
 
-The router is not a replacement for STU-Net. It is a deterministic post-Stage-A
-gate trained on CT/FOV/bone-geometry features. STU-Net remains the anatomy and
+The test sets have been verified by the organizers to conform to this rule.
+The router only selects the target family; STU-Net remains the anatomy and
 fragment segmentation model.
 
 ---
@@ -37,7 +37,7 @@ fragment segmentation model.
 | Lever | What it does | Why it matters |
 |---|---|---|
 | **2-stage cascade** | Stage A finds the *anatomy* (sacrum / L-hip / R-hip / femur); Stage B splits each bone into *fracture fragments* | decouples "which bone" from "how it broke" |
-| **v2.0 target-family router** | classifies the scan as `pelvic` or `femur` and suppresses non-target anatomies before Stage B | removes wrong-family false positive fragments without changing the STU-Net weights |
+| **Official case router** | uses the published SimpleITK/NumPy axis mapping to classify the scan as `pelvic` or `femur` | follows the verified hidden-test routing contract and removes wrong-family false positives |
 | **STU-Net-B + TotalSegmentator warm-start** | a large-scale skeletal pretrain transferred to both stages | strong features from limited (340-case) data |
 | **ABBC fracture target** | a 4-class `background / border / boundary / core` field (PENGWIN-2024 winner formulation) | turns instance separation into a learnable dense target |
 | **Learned affinity head** | 9 multi-scale same-instance edges (short = attractive, long = **repulsive**) decoded by **average-linkage agglomeration** (GASP) | breaks the *touching-fragment merge* ceiling without mutex over-splitting |
@@ -336,8 +336,8 @@ git tag v2.0 && git push origin v2.0
 Daily quota: 10 submissions/day, 10-minute per-case timeout. The deployed Stage-B
 trainer, decoder, and router are selected by Dockerfile `ENV` (for example
 `PENGWIN_DS538_TRAINER`, `PENGWIN_AFFINITY_DECODE`, and `PENGWIN_TARGET_ROUTER`).
-With `PENGWIN_TARGET_ROUTER=1`, the router joblib must be present in the model
-payload or inference fails fast.
+The Dockerfile disables the legacy RF router; the official case rule is called
+directly by the inference entry point and needs no joblib artifact.
 
 ---
 

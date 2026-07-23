@@ -14,7 +14,55 @@
 
 ---
 
-## 🚀 현재 개발 상태 (2026-07-06, v2.0)
+## 🚀 현재 배포 상태 (2026-07-23, **공식 pelvic/femur 라우터 반영**)
+
+> **2026-07-22 조직위 업데이트 적용.** 추론 시작 시 공지에 게시된
+> `get_image_info()`와 `classify_pelvic_femur()`를 직접 호출한다. 공지의 축 계약대로
+> NumPy 배열 `(z,y,x)`에 `spacing_z=sp[0]`, `spacing_x=sp[2]`를 대응시키며,
+> 그 결과가 `pelvic`이면 `Sacrum+LeftHip+RightHip`, `femur`이면 `Femur`만 Stage-B에
+> 전달한다. 조직위가 test set이 이 규칙을 따른다고 명시했으므로 기존 37-feature RF와
+> Stage-A 다수결은 최종 라우팅에 사용하지 않는다.
+>
+> 로컬 340-case 전수 재평가에서는 새 축 매핑이 **295/340 = 86.76%**
+> (pelvic 139/170, femur 156/170)였다. 이는 축 수정 전 구현의 172/340 = 50.6%보다
+> 크게 높다. 100%가 아닌 이유와 무관하게 조직위 보장은 training set이 아니라
+> **test set이 공식 rule을 따른다**는 것이므로 제출 시에는 공식 결과를 그대로 사용한다.
+
+## 🚀 이전 배포 상태 (2026-07-21, **v2.4** — 기준 v2.2 = GC rank 10)
+
+> **v2.4 = v2.2 + 라우터 OOD abstention 게이트.** 당시 기본 설정에서 **알려진 모든 데이터에 대해 동작이
+> 동일함이 증명됨**: 340 학습케이스 전수 측정에서 RF 결정 margin 최소값이 **0.9052**(0.90 미만 0건)이고
+> 임계값 기본이 0.85라 게이트가 발동하지 않는다. GC 공식 prelim 5케이스 재현 검증도 PASS
+> (margin 0.9937~0.9988, abstention 발동 0회).
+>
+> **당시 왜 rule ∧ RF 합의 방식을 쓰지 않았는가.** 축 순서 수정 전 rule을 340 케이스에서 실측한 결과:
+> rule 50.6% vs RF **100%**, 두 신호가 **49.4%(168건)에서 불일치**하며 그 불일치에서
+> **RF 168/168 정답, rule 0/168**. 합의-실패 시 타이브레이크 설계였다면 전체 라우팅 결정의 절반을
+> GC F1 0.572 를 냈던 Ds539 부피 신호에 넘기게 된다. 당시에는 **RF가 스스로 불확실할 때만**
+> (margin < 0.85) rule·해부증거와 3자 투표했다. 이 설계는 2026-07-22 조직위의 구체적인
+> 축 매핑 함수가 발표되면서 공식 라우터 우선 방식으로 대체됐다.
+
+## 🚀 이전 배포 상태 (v2.2 = GC rank 10)
+
+| | |
+|---|---|
+| **배포 버전** | **v2.2** — 예선 종료 시점 GC 리더보드 **10위**. 태그 `v2.2` (커밋 `4542487`) |
+| **파이프라인** | Stage-A `V301`(해부, fold_0) → **37-feature RF family 라우터** → Stage-B `V308`(골절 affinity, **fold_0**) → average-linkage agglomeration decode (`AGGLO_T=0.45`) |
+| **모델 번들** | `model_v2_2.tar.gz` — sha256 `ea55f284…` 핀 고정. **rank-10 floor, 절대 삭제 금지** |
+| **순위를 만든 것** | **타깃 family 라우터** — GC instance F1 **0.57 → 0.94** (≈33위 → 12위). 이후 Stage-A 체크포인트 교체로 10위 |
+| **v2.2 예선 지표** | ins_f1 0.9364 / recall 0.9433 / precision 0.9397 / dice 0.9219 / hd95 5.299 / assd 1.708 / topology 0.9333 / merge 0.2 / split 0.1333 |
+| **남은 병목** | **merge(과소분할)**. 근본원인 = 입력 대비 — 골절 계면의 87%가 CT에서 융합돼 있고 bone-LUT 상 대비가 ~5%뿐 |
+| **순위 규칙** | GC는 **10개 지표의 평균 순위(Mean Position)** 로 정렬한다. 화면의 `Score (Dice)`는 정렬 키가 **아니다** |
+
+> ⚠️ **재빌드 시 주의.** 새 태그를 push해도 GC의 Active 이미지는 자동으로 바뀌지 않는다(수동 선택).
+> 재빌드본은 반드시 스모크 검증 — `len(np.unique(output)) > 1` assert — 을 통과한 뒤에만 Active로 올릴 것.
+> **"job succeeded"는 성공의 증거가 아니다**: 가중치 로드가 실패해도 포괄 예외 처리가 all-zero를 쓰고
+> `return 0` 하므로 GC는 GREEN으로 기록하면서 전 케이스 0점이 된다. 로그에서 `w0sum ≈ 104`
+> (95 미만이면 랜덤 네트워크)와 `official-case-router: family=...`를 함께 확인하라.
+
+---
+
+### 이전 상태 (이력): v2.0 (2026-07-06)
 
 | | |
 |---|---|
@@ -1110,8 +1158,12 @@ python eval.py task1-abbc-eval --dataset-id 538 \
 ### 8.5 추론 / 배포
 
 - 추론 진입: `submission/github_repo/inference/inference.py` (GC 컨테이너 `PENGWIN_ROOT=/opt/ml/model`).
-- v2.0 router runtime: `submission/github_repo/inference/target_family_router.py`.
-- 모델 weight tarball = Models-tab 산출물(git 미커밋, 100MB 제한). v2.0은 이 tarball 안에 `stage1_router/stage1_target_router_fold0.joblib`도 포함해야 한다. deploy mirror `submission/github_repo/code_task1/*.py`는 `experiments/sync_deploy_mirror.sh`로 **생성** — 수동 편집 금지.
+- 현재 case router: `submission/github_repo/inference/inference.py`의 조직위 공식
+  `get_image_info()` + `classify_pelvic_femur()`.
+- 모델 weight tarball = Models-tab 산출물(git 미커밋, 100MB 제한). 공식 rule 기반
+  배포에는 기존 `stage1_router/stage1_target_router_fold0.joblib`이 필요하지 않다.
+  deploy mirror `submission/github_repo/code_task1/*.py`는
+  `experiments/sync_deploy_mirror.sh`로 **생성** — 수동 편집 금지.
 
 ### 8.6 주요 env 변수
 
@@ -1122,8 +1174,8 @@ python eval.py task1-abbc-eval --dataset-id 538 \
 | `PENGWIN_DS538_TRAINER` | Dockerfile: `...AffinityV308` | Stage-B trainer |
 | `PENGWIN_DS538_FOLD` | Dockerfile: `0` | Stage-B fold |
 | `PENGWIN_DS538_OUT_CH` | Dockerfile: `13` | 4=ABBC / 13=ABBC+affinity |
-| `PENGWIN_TARGET_ROUTER` | Dockerfile: `1` | v2.0 target-family router 사용 |
-| `PENGWIN_TARGET_ROUTER_PATH` | `/opt/ml/model/stage1_router/stage1_target_router_fold0.joblib` | router artifact 경로 |
+| `PENGWIN_TARGET_ROUTER` | Dockerfile: `0` | legacy RF router(현재 공식 case rule이 우선하므로 비활성) |
+| `PENGWIN_TARGET_ROUTER_PATH` | — | legacy RF router를 수동 실험할 때만 사용하는 artifact 경로 |
 | `PENGWIN_ROUTE_KEEP_FRAC` | `0.20` | anatomy 유지 게이트(× 최대) |
 | `PENGWIN_ROUTE_CC_MODE` | `largest` | `largest` / `union` / `floor` |
 | `PENGWIN_STAGEA_BONE_RECONCILE` | Dockerfile: `0` | router off fallback에서만 의미 있음 |

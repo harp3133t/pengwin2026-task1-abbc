@@ -96,7 +96,7 @@ DS539_OUTPUT_CHANNELS = 5  # background, Sacrum, LeftHip, RightHip, Femur
 #     model input channel — that is legitimate cascade routing, not leakage).
 DS538_DATASET = "Dataset538_PelvicFemurBICMFragmentV5"
 DS538_TRAINER = os.environ.get("PENGWIN_DS538_TRAINER", "PengwinTrainerSTUNetBaseABBCPhase1V302")
-DS538_PLANS = "nnUNetResEncUNetLPlans"
+DS538_PLANS = os.environ.get("PENGWIN_DS538_PLANS", "nnUNetResEncUNetLPlans")  # V340 uses nnUNetResEncUNetLPlansLUTv2
 DS538_CONFIG = "3d_fullres"
 DS538_FOLD = os.environ.get("PENGWIN_DS538_FOLD", "0")  # int-string or "all" (fold_all); default "0" = v1.5
 DS538_OUTPUT_CHANNELS = int(os.environ.get("PENGWIN_DS538_OUT_CH", "4"))  # ABBC 4ch (V302); 13 for V307 affinity head (4 ABBC + 9 affinity)
@@ -123,6 +123,11 @@ PELVIC_ANATOMIES = ("Sacrum", "LeftHip", "RightHip")
 # If enabled, missing/incompatible router artifacts fail fast to avoid silently
 # deploying the old Ds539 volume-ratio route.
 TARGET_ROUTER_ENABLED = os.environ.get("PENGWIN_TARGET_ROUTER", "0") == "1"
+# [v2.4] Below this RF decision margin (|2p-0.5|) the router stops trusting itself and takes a
+# 3-way vote with the official rule + Stage-1 anatomy evidence. Measured min margin over all 340
+# training cases = 0.9052 (zero cases below 0.90), so the default 0.85 never fires on known data
+# and the deployed routing is unchanged. 0 disables the gate entirely.
+ROUTER_ABSTAIN_MARGIN = float(os.environ.get("PENGWIN_ROUTER_ABSTAIN_MARGIN", "0.85"))
 TARGET_ROUTER_PATH = Path(
     os.environ.get(
         "PENGWIN_TARGET_ROUTER_PATH",
@@ -249,8 +254,17 @@ def bone_lut_normalize(arr: np.ndarray) -> np.ndarray:
     contract 가 어긋나지 않도록 한다.
     """
     x = arr.astype(np.float32, copy=False)
-    xp = np.asarray([-1000.0, -200.0, 150.0, 700.0, 1500.0, 2000.0], dtype=np.float32)
-    fp = np.asarray([0.0, 0.05, 0.35, 0.70, 0.92, 1.0], dtype=np.float32)
+    # PENGWIN_LUT_V2 (env-gated, default off): amplified bone-LUT for the input-contrast experiment
+    # (V340). The v1 LUT gives the thin fracture-line interface only ~5% [0,1] contrast (band
+    # [150,700]HU -> [0.35,0.70], slope 6.4e-4/HU); v2 steepens the cancellous/fracture band
+    # [100,400]HU -> [0.20,0.75] (slope 1.8e-3/HU, ~2.5x) so the model can SEE the fused-fragment
+    # interface. Models trained on v2 data MUST run inference with PENGWIN_LUT_V2=1 (train/infer contract).
+    if os.environ.get("PENGWIN_LUT_V2", "") == "1":
+        xp = np.asarray([-1000.0, -200.0, 100.0, 400.0, 900.0, 2000.0], dtype=np.float32)
+        fp = np.asarray([0.0, 0.05, 0.20, 0.75, 0.90, 1.0], dtype=np.float32)
+    else:
+        xp = np.asarray([-1000.0, -200.0, 150.0, 700.0, 1500.0, 2000.0], dtype=np.float32)
+        fp = np.asarray([0.0, 0.05, 0.35, 0.70, 0.92, 1.0], dtype=np.float32)
     return np.interp(np.clip(x, xp[0], xp[-1]), xp, fp).astype(np.float32)
 
 
@@ -490,7 +504,16 @@ def decode_abbc_core_seed_watershed(
     support = ~background
     if not support.any():
         return np.zeros(probs.shape[1:], dtype=np.uint16)
+    core_threshold = float(os.environ.get("PENGWIN_DECODE_CORE_THRESH", core_threshold))
     core = (probs[3] >= float(core_threshold)) & support
+    # EXPERIMENT (env-gated, default no-op): erode core mask before CC labeling to break thin
+    # necks between fused fragments (tests H1 vs H2: does separating merged cores need only a
+    # decode change, or a retrain?). Erosion is applied to the core seed only; watershed still
+    # fills the eroded rim back from the nearest seed, so it cannot lose whole fragments — it can
+    # only SPLIT a core CC that is connected by a thin neck.
+    _core_erode = int(os.environ.get("PENGWIN_DECODE_CORE_ERODE", "0"))
+    if _core_erode > 0 and core.any():
+        core = ndi.binary_erosion(core, iterations=_core_erode)
     core_labels, n_core = ndi.label(core, structure=np.ones((3, 3, 3), dtype=bool))
     core_labels = core_labels.astype(np.int32, copy=False)
     if int(n_core) <= 0:
@@ -809,8 +832,18 @@ def merge_masks_with_sanity(ds539_masks, bone_masks, image_shape,
 def estimate_fracture_inference_seconds(bbox, patch_size=(192, 160, 224), seconds_per_patch=2.5):
     """Layer 3: Ds538 sliding-window 추론 소요 시간 대략 추정.
 
-    patch_size 는 Ds538 3d_fullres plan 의 patch_size [192,160,224] (z,y,x) 와 일치.
     nnUNet 의 sliding window 는 tile_step_size=0.5 이므로 patch 의 50% 씩 이동한다.
+
+    ⚠️ [2026-07-21 감사] "plan 의 patch_size [192,160,224] 와 일치" 라는 종전 서술은 **거짓**이다.
+    V308/V302 의 plans.json 실측 patch_size 는 **[256,160,160]** 이고, 이 함수는 raw crop 을 타일링하는데
+    실제 추론은 plan spacing 으로 리샘플된 crop 을 타일링한다(실 CT z=1.0mm vs plan 0.801mm → ×1.25).
+    680개 실 bbox 측정: 평균 추정 4.99 타일 vs 실제 7.31 타일, ROI 의 70.6% 에서 **과소추정** =
+    ETA 가 ~46% 낙관적이고 오차 방향이 안전하지 않다(가드가 늦게 걸린다).
+
+    그래도 **값은 고치지 않는다**: 명목 pelvic 케이스가 ~51 타일 ≈ ~130s 로 480s 예산 대비 여유가 크고
+    가드가 실제로 걸리지 않는다. 상수를 바꾸면 rank-10 배포본의 런타임 동작이 바뀐다(가드가 더 자주 걸려
+    해부부위를 0 으로 내보낼 수 있다). **실질적 교훈은 부정형이다 — 추론에 비용 레버(Stage-1/2 앙상블,
+    TTA, tile_step_size↓)를 추가하지 마라.** 실패 모드가 우아한 0 이 아니라 출력조차 없는 하드 타임아웃이다.
     축별 patch 개수 = ceil((dim - patch) / (patch * 0.5)) + 1.
     이를 곱한 총 patch 수에 patch 당 평균 추론 시간을 곱해 ETA 를 구한다.
     """
@@ -854,7 +887,84 @@ def route_from_ds539_masks(ds539_masks: dict) -> tuple[str, tuple[str, ...]]:
     return "multi", kept
 
 
-def route_from_target_family_router(image_path: Path) -> tuple[str, tuple[str, ...]] | None:
+def get_image_info(image_nii: Path) -> dict:
+    """Extract routing metadata using the organizers' updated axis convention.
+
+    Keep this implementation identical to the concrete function published in the
+    PENGWIN 2026 Task 1/2 update notice.  In particular, ``GetSpacing()`` is
+    deliberately paired with NumPy's ``(z, y, x)`` array axes as specified there.
+    """
+    import SimpleITK as sitk
+    img = sitk.ReadImage(str(image_nii))
+    arr = sitk.GetArrayFromImage(img)  # (z, y, x)
+    sp = img.GetSpacing()
+    return {
+        "dim_z": arr.shape[0], "dim_y": arr.shape[1], "dim_x": arr.shape[2],
+        "spacing_z": sp[0], "spacing_y": sp[1], "spacing_x": sp[2],
+        "physical_z_mm": sp[0] * arr.shape[0], "physical_x_mm": sp[2] * arr.shape[2],
+    }
+
+
+def classify_pelvic_femur(spacing_x, spacing_y, spacing_z, physical_x_mm, physical_z_mm):
+    """Organizers' updated pelvic/femur decision tree (Task 1/2 notice)."""
+    if physical_x_mm <= 285.35:
+        if spacing_x <= 0.71:
+            return "pelvic"
+        elif spacing_z <= 0.90:
+            return "femur"
+        else:
+            return "pelvic" if spacing_y <= 0.91 else "femur"
+    else:
+        if spacing_z <= 0.68:
+            return "pelvic" if physical_z_mm <= 193.55 else "femur"
+        else:
+            return "pelvic" if physical_z_mm <= 390.78 else "femur"
+
+
+def route_from_official_case_rule(image_path: Path) -> tuple[str, tuple[str, ...]]:
+    """Route a case with the concrete metadata and decision functions from the notice."""
+    info = get_image_info(image_path)
+    family = classify_pelvic_femur(
+        info["spacing_x"],
+        info["spacing_y"],
+        info["spacing_z"],
+        info["physical_x_mm"],
+        info["physical_z_mm"],
+    )
+    anatomies = ("Femur",) if family == "femur" else PELVIC_ANATOMIES
+    log(
+        "official-case-router: "
+        f"family={family} dim_zyx=({info['dim_z']},{info['dim_y']},{info['dim_x']}) "
+        f"spacing_zyx=({info['spacing_z']:.4f},{info['spacing_y']:.4f},"
+        f"{info['spacing_x']:.4f}) "
+        f"physical_z_mm={info['physical_z_mm']:.2f} "
+        f"physical_x_mm={info['physical_x_mm']:.2f} -> anatomies={anatomies}"
+    )
+    return f"official-rule:{family}", anatomies
+
+
+def _family_evidence_from_ds539(ds539_masks: dict | None) -> tuple[str | None, float]:
+    """Direct image evidence: femur voxels vs pelvic voxels in the Stage-1 anatomy argmax.
+
+    Free — Stage-1 already ran before routing. Returns (family|None, femur_fraction).
+    Deliberately NOT used on its own: Ds539 confidently hallucinates cross-family bone (a femur-only
+    scan in the GC logs got LeftHip=51,226 voxels across 22 CCs), which is exactly why pure
+    Ds539-volume routing scored GC instance F1 0.572 vs 0.940 for the RF.
+    """
+    if not ds539_masks:
+        return None, float("nan")
+    fem = int(ds539_masks["Femur"].sum()) if ds539_masks.get("Femur") is not None else 0
+    pel = sum(int(ds539_masks[a].sum()) for a in PELVIC_ANATOMIES
+              if ds539_masks.get(a) is not None)
+    tot = fem + pel
+    if tot <= 0:
+        return None, float("nan")
+    frac = fem / tot
+    return ("femur" if frac >= 0.5 else "pelvic"), frac
+
+
+def route_from_target_family_router(image_path: Path,
+                                    ds539_masks: dict | None = None) -> tuple[str, tuple[str, ...]] | None:
     if not TARGET_ROUTER_ENABLED:
         return None
 
@@ -870,6 +980,50 @@ def route_from_target_family_router(image_path: Path) -> tuple[str, tuple[str, .
     from target_family_router import predict_family
 
     family, p_femur = predict_family(image_path, _TARGET_ROUTER_PAYLOAD)
+    source = "target-router"
+
+    # --- [v2.4] OOD abstention gate ------------------------------------------------------------
+    # Measured on all 340 training cases (2026-07-21): the RF is correct 340/340 and its decision
+    # margin |2p-0.5| never drops below 0.9052 -- there are ZERO cases below 0.90. So with the
+    # default threshold 0.85 this branch is a provable NO-OP on every case we can measure, and the
+    # deployed rank-10 routing is bit-identical.
+    #
+    # It exists only for a genuinely out-of-distribution test scan where the RF is less certain than
+    # anything it ever saw in training. There we do NOT trust the RF blindly; we combine the two
+    # independent signals we have -- the organizers' rule (guaranteed on the TEST set, useless on
+    # ours) and the Stage-1 anatomy evidence (real image content, but hallucination-prone).
+    #
+    # Deliberately NOT the symmetric "rule AND RF must agree, else tiebreak" design: the rule
+    # disagrees with the RF on 49.4% of our cases and is wrong on 100% of those disagreements, so
+    # letting it trigger a tiebreak would hand half of all routing decisions to the 0.572-F1 signal.
+    # Set PENGWIN_ROUTER_ABSTAIN_MARGIN=0 to hard-disable, or raise it to widen the safety net.
+    margin = abs(float(p_femur) - 0.5) * 2.0 if np.isfinite(p_femur) else 1.0
+    if margin < ROUTER_ABSTAIN_MARGIN:
+        try:
+            _r = sitk.ImageFileReader()
+            _r.SetFileName(str(image_path))
+            _r.ReadImageInformation()
+            info = get_image_info(image_path)
+            rule_family = classify_pelvic_femur(
+                info["spacing_x"],
+                info["spacing_y"],
+                info["spacing_z"],
+                info["physical_x_mm"],
+                info["physical_z_mm"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            rule_family = None
+            log(f"target-router: official rule unavailable ({exc})")
+        anat_family, femur_frac = _family_evidence_from_ds539(ds539_masks)
+        votes = [v for v in (family, rule_family, anat_family) if v]
+        winner = max(set(votes), key=votes.count) if votes else family
+        log(f"target-router: LOW CONFIDENCE margin={margin:.4f} < {ROUTER_ABSTAIN_MARGIN} "
+            f"-> vote rf={family} rule={rule_family} anatomy={anat_family} "
+            f"(femur_frac={femur_frac:.3f}) => {winner}")
+        if winner != family:
+            source = "target-router-abstain"
+            family = winner
+
     if family == "femur":
         anatomies = ("Femur",)
     elif family == "pelvic":
@@ -878,10 +1032,11 @@ def route_from_target_family_router(image_path: Path) -> tuple[str, tuple[str, .
         raise ValueError(f"target-router predicted unsupported family {family!r}")
 
     if np.isfinite(p_femur):
-        log(f"target-router: family={family} p_femur={p_femur:.4f} -> anatomies={anatomies}")
+        log(f"target-router: family={family} p_femur={p_femur:.4f} margin={margin:.4f} "
+            f"-> anatomies={anatomies}")
     else:
         log(f"target-router: family={family} p_femur=nan -> anatomies={anatomies}")
-    return f"target-router:{family}", anatomies
+    return f"{source}:{family}", anatomies
 
 
 # ---------------------------------------------------------------------------
@@ -906,6 +1061,15 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
     명시되면(테스트/디버그용) 그 subset 만 강제한다.
     """
     import time
+    global LAST_AFFINITY_SWEEP_LABELS, LAST_AFFINITY_GT_METADATA
+    global LAST_AFFINITY_SEED_LABELS, LAST_AFFINITY_SEED_METADATA
+    global LAST_AFFINITY_SEED_GUARD_LABELS, LAST_AFFINITY_SEED_GUARD_METADATA
+    LAST_AFFINITY_SWEEP_LABELS = {}
+    LAST_AFFINITY_GT_METADATA = {}
+    LAST_AFFINITY_SEED_LABELS = {}
+    LAST_AFFINITY_SEED_METADATA = {}
+    LAST_AFFINITY_SEED_GUARD_LABELS = {}
+    LAST_AFFINITY_SEED_GUARD_METADATA = {}
     t_start = time.time()
 
     # === Step 1: LPS 정규화 + bone window HU clip ===
@@ -925,6 +1089,25 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
     spacing_xyz = img_lps.GetSpacing()
     spacing_zyx = (float(spacing_xyz[2]), float(spacing_xyz[1]), float(spacing_xyz[0]))
     img_shape = image_npy_lps.shape
+    # [DIAGNOSTIC, env-gated] Load the source-space GT once so it can be transformed with
+    # the EXACT Dataset538 preprocessing used for each anatomy ROI. The resulting aligned
+    # instance map is dumped next to the 13-channel probabilities for affinity calibration
+    # analysis. Default inference is unchanged when the env variable is absent.
+    _aff_gt_source = None
+    _aff_gt_path = os.environ.get("PENGWIN_AFFINITY_GT_LABEL", "").strip()
+    if _aff_gt_path:
+        _aff_gt_img = canonicalize_sitk(sitk.ReadImage(_aff_gt_path), target="LPS")
+        _aff_gt_source = sitk.GetArrayFromImage(_aff_gt_img)
+        if _aff_gt_source.shape != img_shape:
+            raise RuntimeError(
+                f"affinity GT shape mismatch: gt={_aff_gt_source.shape} image={img_shape}"
+            )
+        if not np.allclose(_aff_gt_img.GetSpacing(), img_lps.GetSpacing(), rtol=0.0, atol=1e-5):
+            raise RuntimeError(
+                f"affinity GT spacing mismatch: gt={_aff_gt_img.GetSpacing()} "
+                f"image={img_lps.GetSpacing()}"
+            )
+        log(f"affinity GT diagnostic enabled: {_aff_gt_path}")
     forced_anatomies = anatomies  # None 이면 Ds539 argmax 로 자동 라우팅
     log(f"V0.4 preproc: shape={img_shape} spacing_zyx={spacing_zyx} "
         f"forced_anatomies={forced_anatomies}")
@@ -983,6 +1166,19 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
 
     # === Layer 2: Ds539 5-class argmax 기반 anatomy mask 추출 (Femur 포함) ===
     ds539_masks = ds539_argmax_masks(probs_full)
+    # ORACLE ANATOMY (env-gated, eval only): replace Stage-A masks with GT anatomy (from the GT
+    # instance label's PENGWIN ID ranges) to measure the Stage-B ceiling under PERFECT localization.
+    # Pair with PENGWIN_ROUTE_KEEP_FRAC=0.01 + PENGWIN_STAGEA_BONE_RECONCILE=0 so every present GT
+    # anatomy is routed and the Ds539-size gate/reconcile can't distort the oracle.
+    _oracle_lbl = os.environ.get("PENGWIN_ORACLE_ANATOMY_LABEL", "")
+    if _oracle_lbl:
+        _gt = sitk.GetArrayFromImage(canonicalize_sitk(sitk.ReadImage(_oracle_lbl), target="LPS"))
+        if _gt.shape == img_shape:
+            _RNG = {"Sacrum": (1, 50), "LeftHip": (51, 100), "RightHip": (101, 150), "Femur": (151, 200)}
+            ds539_masks = {a: ((_gt >= lo) & (_gt <= hi)) for a, (lo, hi) in _RNG.items()}
+            log("L2 ORACLE anatomy(GT): " + ", ".join(f"{a}={int(ds539_masks[a].sum())}" for a in ALL_ANATOMIES))
+        else:
+            log(f"L2 ORACLE shape mismatch gt={_gt.shape} vs {img_shape} -> Ds539 fallback")
     log("L2 Ds539 argmax: " + ", ".join(f"{a}={int(ds539_masks[a].sum())}" for a in ALL_ANATOMIES))
     # DIAG: Ds539 health — each anatomy's fraction of the WHOLE volume. The GC failure was
     # RightHip=73% + Sacrum 18141 CCs; a healthy case is each anatomy ~1-2% of volume.
@@ -1002,7 +1198,7 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         anatomies = tuple(forced_anatomies)
         log(f"L2b routing: forced anatomies={anatomies}")
     else:
-        router_route = route_from_target_family_router(image_path)
+        router_route = route_from_target_family_router(image_path, ds539_masks)
         if router_route is not None:
             _route, anatomies = router_route
             used_target_router = True
@@ -1071,6 +1267,47 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
     )
 
     full_label = np.zeros(img_shape, dtype=np.uint16)
+    _aff_sweep_raw = os.environ.get("PENGWIN_AFFINITY_SWEEP_THRESHOLDS", "").strip()
+    _aff_sweep_thresholds = sorted({
+        float(value.strip()) for value in _aff_sweep_raw.split(",") if value.strip()
+    })
+    _aff_sweep_full = {
+        f"{threshold:.2f}": np.zeros(img_shape, dtype=np.uint16)
+        for threshold in _aff_sweep_thresholds
+    }
+    if _aff_sweep_thresholds:
+        log(f"affinity one-pass sweep thresholds={_aff_sweep_thresholds}")
+    _aff_seed_raw = os.environ.get(
+        "PENGWIN_AFFINITY_SEED_BASIN_THRESHOLDS", ""
+    ).strip()
+    _aff_seed_thresholds = sorted({
+        float(value.strip()) for value in _aff_seed_raw.split(",") if value.strip()
+    })
+    _aff_seed_full = {
+        f"{threshold:.2f}": np.zeros(img_shape, dtype=np.uint16)
+        for threshold in _aff_seed_thresholds
+    }
+    _aff_seed_metadata = {
+        f"{threshold:.2f}": {} for threshold in _aff_seed_thresholds
+    }
+    if _aff_seed_thresholds:
+        log(f"affinity seed-completion basin thresholds={_aff_seed_thresholds}")
+    _aff_seed_guard_profiles = tuple(
+        value.strip()
+        for value in os.environ.get(
+            "PENGWIN_AFFINITY_SEED_GUARD_PROFILES", ""
+        ).split(",")
+        if value.strip()
+    )
+    _aff_seed_guard_full = {
+        profile: np.zeros(img_shape, dtype=np.uint16)
+        for profile in _aff_seed_guard_profiles
+    }
+    _aff_seed_guard_metadata = {
+        profile: {} for profile in _aff_seed_guard_profiles
+    }
+    if _aff_seed_guard_profiles:
+        log(f"affinity seed-guard profiles={_aff_seed_guard_profiles}")
     for anatomy in anatomies:
         elapsed = time.time() - t_start
         if V03_USE_TIME_BUDGET and elapsed >= TIME_BUDGET_HARD_LIMIT:
@@ -1143,17 +1380,66 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         # channels. Split -> softmax(ABBC[:4]) + sigmoid(affinity[4:]) -> average-linkage
         # agglomeration on the LEARNED affinities. Default OFF -> V302 (4ch) path unchanged.
         _fusion = os.environ.get("PENGWIN_FUSION_DECODE", "0") == "1"
-        if os.environ.get("PENGWIN_AFFINITY_DECODE", "0") == "1" or _fusion:
+        _aff_sweep_inputs = None
+        _aff_seed_inputs = None
+        if os.environ.get("PENGWIN_EMBEDDING_DECODE", "0") == "1":
+            # [V320 EMBEDDING] head = 4 ABBC (ch 0-3 = fg/semantic) + E-dim per-voxel embedding (ch 4..).
+            # Cluster the fg voxels' cosine embeddings -> instances (variable count, no agglomeration
+            # threshold, no core-seed). Must take precedence so it never falls through to the ABBC
+            # default which softmaxes ALL channels (would corrupt the raw embedding channels).
             import sys as _sys
-            # agglo_decode.py is VENDORED next to this file so it ships in the GC container; also add
-            # the dev experiments/ dir as a fallback for local runs. (numpy/scipy/skimage only.)
             for _p in (os.path.dirname(os.path.abspath(__file__)),
                        "/home/guest/Project/PENGWIN2026/experiments"):
                 if _p not in _sys.path:
                     _sys.path.insert(0, _p)
-            from agglo_decode import decode_affinity_agglo, decode_fusion
+            from embedding_decode import decode_embeddings, decode_embeddings_coreseeded
+            _E = int(os.environ.get("PENGWIN_EMB_DIM", "16"))
+            _abbc = softmax_axis0(ds538_logits_pp[:4])
+            _fg = _abbc.argmax(0) > 0                       # non-bg (border/boundary/core) = bone fragments
+            _emb = np.asarray(ds538_logits_pp[4:4 + _E], dtype=np.float32)
+            _dump_dir = os.environ.get("PENGWIN_DUMP_PROBS", "")
+            if _dump_dir:
+                os.makedirs(_dump_dir, exist_ok=True)
+                np.save(os.path.join(_dump_dir, f"emb_{anatomy}.npy"),
+                        np.concatenate([_abbc, _emb], axis=0).astype(np.float16))
+                log(f"[dump] saved {4 + _E}ch abbc+emb {anatomy} -> {_dump_dir}")
+            if os.environ.get("PENGWIN_EMB_CORESEED", "0") == "1":
+                # [V320 hybrid] ABBC cores cap the fragment COUNT (exactly like the deployed V302
+                # core-seed watershed); the embedding only places the boundaries between touching
+                # fragments. Kills mean-shift's free-running structural over-split.
+                decoded_pp = decode_embeddings_coreseeded(
+                    _abbc, _emb,
+                    bg_thr=float(os.environ.get("PENGWIN_BG_THR", str(BACKGROUND_THRESHOLD))),
+                    core_thr=float(os.environ.get("PENGWIN_CORE_THR", str(CORE_THRESHOLD))),
+                    min_size=int(os.environ.get("PENGWIN_MIN_CC_VOX", "150")))
+            else:
+                decoded_pp = decode_embeddings(
+                    _emb, _fg, bandwidth=float(os.environ.get("PENGWIN_EMB_BW", "0.7")),
+                    min_size=int(os.environ.get("PENGWIN_MIN_CC_VOX", "150")))
+        elif os.environ.get("PENGWIN_AFFINITY_DECODE", "0") == "1" or _fusion:
+            import sys as _sys
+            # agglo_decode.py is VENDORED next to this file so it ships in the GC container; also add
+            # the dev experiments/ dir as a fallback for local runs. (numpy/scipy/skimage only.)
+            for _p in (os.path.dirname(os.path.abspath(__file__)),
+                       os.path.join(os.environ.get("PENGWIN_ROOT", "/nonexistent"),
+                                    "code_task1", "experiments")):
+                if _p not in _sys.path:
+                    _sys.path.insert(0, _p)
+            from agglo_decode import (
+                decode_affinity_agglo,
+                decode_affinity_agglo_seed_completed,
+                decode_fusion,
+            )
             _abbc = softmax_axis0(ds538_logits_pp[:4])
             _aff = 1.0 / (1.0 + np.exp(-np.asarray(ds538_logits_pp[4:], dtype=np.float32)))
+            if _aff_sweep_thresholds and not _fusion:
+                _aff_sweep_inputs = (_abbc, _aff, decode_affinity_agglo)
+            if (_aff_seed_thresholds or _aff_seed_guard_profiles) and not _fusion:
+                _aff_seed_inputs = (
+                    _abbc,
+                    _aff,
+                    decode_affinity_agglo_seed_completed,
+                )
             # [13ch raw dump] 4 ABBC softmax + 9 affinity sigmoid -> enables OFFLINE decode/fusion
             # T-sweeps on CPU (no GPU re-run). Split offline as probs13[:4]/probs13[4:].
             _dump_dir = os.environ.get("PENGWIN_DUMP_PROBS", "")
@@ -1162,6 +1448,65 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                 np.save(os.path.join(_dump_dir, f"probs13_{anatomy}.npy"),
                         np.concatenate([_abbc, _aff], axis=0).astype(np.float16))
                 log(f"[dump] saved 13ch probs {anatomy} -> {_dump_dir}")
+                if _aff_gt_source is not None:
+                    import json as _json
+                    _gt_lo, _gt_hi = ANATOMY_RANGES[anatomy]
+                    _gt_crop = _aff_gt_source[bbox]
+                    _gt_crop = np.where(
+                        (_gt_crop >= _gt_lo) & (_gt_crop <= _gt_hi), _gt_crop, 0
+                    ).astype(np.int16, copy=False)
+                    _gt_props = {"spacing": list(spacing_zyx)}
+                    _gt_preprocessor = ds538_predictor.configuration_manager.preprocessor_class(
+                        verbose=False
+                    )
+                    _unused_data_pp, _gt_pp = _gt_preprocessor.run_case_npy(
+                        ds538_image_4d,
+                        _gt_crop[None],
+                        _gt_props,
+                        ds538_predictor.plans_manager,
+                        ds538_predictor.configuration_manager,
+                        ds538_predictor.dataset_json,
+                    )
+                    _gt_pp = np.asarray(_gt_pp[0]).astype(np.int16, copy=False)
+                    if _gt_pp.shape != _aff.shape[1:]:
+                        raise RuntimeError(
+                            f"affinity GT preprocessing mismatch for {anatomy}: "
+                            f"gt={_gt_pp.shape} affinity={_aff.shape[1:]}"
+                        )
+                    _gt_out = os.path.join(_dump_dir, f"gt_instance_{anatomy}.npy")
+                    np.save(_gt_out, _gt_pp)
+                    _bbox_zyx = [
+                        [int(axis_slice.start), int(axis_slice.stop)] for axis_slice in bbox
+                    ]
+                    _meta = {
+                        "anatomy": anatomy,
+                        "source_gt": _aff_gt_path,
+                        "source_bbox_zyx_stop_exclusive": _bbox_zyx,
+                        "source_spacing_zyx": list(spacing_zyx),
+                        "source_crop_shape": list(_gt_crop.shape),
+                        "preprocessed_shape": list(_gt_pp.shape),
+                        "preprocessed_gt_dtype": str(_gt_pp.dtype),
+                        "preprocessed_gt_unique": [
+                            int(value) for value in np.unique(_gt_pp).tolist()
+                        ],
+                        "configuration_spacing": [
+                            float(value)
+                            for value in ds538_predictor.configuration_manager.spacing
+                        ],
+                        "transpose_forward": [
+                            int(value) for value in ds538_predictor.plans_manager.transpose_forward
+                        ],
+                        "affinity_head_offsets_zyx": [
+                            [1, 0, 0], [0, 1, 0], [0, 0, 1],
+                            [3, 0, 0], [0, 3, 0], [0, 0, 3],
+                            [9, 0, 0], [0, 9, 0], [0, 0, 9],
+                        ],
+                    }
+                    _meta_out = os.path.join(_dump_dir, f"alignment_{anatomy}.json")
+                    with open(_meta_out, "w") as _handle:
+                        _json.dump(_meta, _handle, indent=2)
+                    LAST_AFFINITY_GT_METADATA[anatomy] = _meta
+                    log(f"[dump] saved aligned GT {anatomy} -> {_gt_out}")
             if os.environ.get("PENGWIN_AFF_STATS", "0") == "1":
                 _sh = _aff[:3]  # short-range channels
                 log(f"[aff:{anatomy}] all: mean={float(_aff.mean()):.3f} frac<0.5={float((_aff<0.5).mean()):.4f} | short: mean={float(_sh.mean()):.3f} frac<0.5={float((_sh<0.5).mean()):.4f} min={float(_sh.min()):.3f}")
@@ -1201,6 +1546,153 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
             else:
                 decoded_pp = decode_abbc_core_seed_watershed(ds538_probs)
         decoded_crop = resample_label_map_to_original(decoded_pp, ds538_data_props, ds538_predictor)
+
+        # [DIAGNOSTIC, env-gated] Add one non-GT marker to every sufficiently large
+        # affinity-separated basin that lacks a normal core marker. Decode several basin
+        # thresholds from the SAME logits and preserve the normal decoder as the returned
+        # within-run control. Default inference is unchanged when the env variable is absent.
+        if _aff_seed_inputs is not None:
+            _seed_abbc, _seed_aff, _seed_decode = _aff_seed_inputs
+            _seed_variant_specs = [
+                (
+                    f"{threshold:.2f}",
+                    threshold,
+                    "none",
+                    _aff_seed_full,
+                    _aff_seed_metadata,
+                )
+                for threshold in _aff_seed_thresholds
+            ]
+            _seed_variant_specs.extend(
+                (
+                    profile,
+                    0.50,
+                    profile,
+                    _aff_seed_guard_full,
+                    _aff_seed_guard_metadata,
+                )
+                for profile in _aff_seed_guard_profiles
+            )
+            for (
+                _key,
+                _basin_threshold,
+                _guard_profile,
+                _variant_full_store,
+                _variant_metadata_store,
+            ) in _seed_variant_specs:
+                _variant_pp, _seed_diag = _seed_decode(
+                    _seed_abbc,
+                    _seed_aff,
+                    T=float(os.environ.get("PENGWIN_AGGLO_T", "0.45")),
+                    min_vox=int(os.environ.get("PENGWIN_MIN_CC_VOX", "250")),
+                    basin_sep=_basin_threshold,
+                    min_basin_vox=int(
+                        os.environ.get("PENGWIN_AFFINITY_SEED_MIN_BASIN_VOX", "250")
+                    ),
+                    guard_profile=_guard_profile,
+                    return_diagnostics=True,
+                )
+                _seed_diag["preprocessed_foreground_matches_baseline"] = bool(
+                    np.array_equal(_variant_pp > 0, decoded_pp > 0)
+                )
+                _variant_metadata_store[_key][anatomy] = _seed_diag
+                _variant_crop = resample_label_map_to_original(
+                    _variant_pp, ds538_data_props, ds538_predictor
+                )
+                _lo, _hi = ANATOMY_RANGES[anatomy]
+                _n_slots = _hi - _lo + 1
+                _local_ids = sorted(
+                    int(value) for value in np.unique(_variant_crop) if int(value) > 0
+                )
+                if not _local_ids:
+                    continue
+                if len(_local_ids) > _n_slots:
+                    _sizes = [
+                        (local_id, int((_variant_crop == local_id).sum()))
+                        for local_id in _local_ids
+                    ]
+                    _sizes.sort(key=lambda item: -item[1])
+                    _local_ids = [item[0] for item in _sizes[:_n_slots]]
+                _remap = np.zeros(max(_local_ids) + 1, dtype=np.uint16)
+                for _index, _old_id in enumerate(_local_ids):
+                    _remap[_old_id] = np.uint16(_lo + _index)
+                _filtered = np.where(
+                    np.isin(_variant_crop, _local_ids), _variant_crop, 0
+                ).astype(np.int32, copy=False)
+                _filtered = np.clip(_filtered, 0, max(_local_ids))
+                _remapped = _remap[_filtered]
+                _variant_full = _variant_full_store[_key]
+                _variant_slot = _variant_full[bbox]
+                _write_mask = (_remapped > 0) & (_variant_slot == 0)
+                if os.environ.get("PENGWIN_CONFINE_TO_MASK", "1") == "1":
+                    _other = np.zeros(img_shape, dtype=bool)
+                    for _other_anatomy, _other_info in merged.items():
+                        if _other_anatomy != anatomy and _other_info.get("mask") is not None:
+                            _other |= np.asarray(_other_info["mask"]).astype(bool)
+                    _other_bbox = _other[bbox]
+                    if _other_bbox.shape == _write_mask.shape:
+                        _write_mask = _write_mask & ~_other_bbox
+                _variant_slot[_write_mask] = _remapped[_write_mask]
+                _variant_full[bbox] = _variant_slot
+                _variant_full_store[_key] = _variant_full
+                log(
+                    f"[{anatomy}] seed-completion key={_key} basin={_basin_threshold:.2f} "
+                    f"candidates={_seed_diag['forced_seed_candidates']} "
+                    f"kept={_seed_diag['forced_seeds_kept']} painted="
+                    f"{int(_write_mask.sum())} voxels, {len(_local_ids)} fragments"
+                )
+
+        # [DIAGNOSTIC, env-gated] Decode the SAME logits at several affinity thresholds and
+        # paste each variant into a full source-space label map. This avoids repeated GPU
+        # inference and makes T=0.45 an exact within-run control. Default behavior is unchanged.
+        if _aff_sweep_inputs is not None:
+            _sweep_abbc, _sweep_aff, _sweep_decode = _aff_sweep_inputs
+            for _threshold in _aff_sweep_thresholds:
+                _key = f"{_threshold:.2f}"
+                _variant_pp = _sweep_decode(_sweep_abbc, _sweep_aff, T=_threshold)
+                _variant_crop = resample_label_map_to_original(
+                    _variant_pp, ds538_data_props, ds538_predictor
+                )
+                _lo, _hi = ANATOMY_RANGES[anatomy]
+                _n_slots = _hi - _lo + 1
+                _local_ids = sorted(
+                    int(value) for value in np.unique(_variant_crop) if int(value) > 0
+                )
+                if not _local_ids:
+                    continue
+                if len(_local_ids) > _n_slots:
+                    _sizes = [
+                        (local_id, int((_variant_crop == local_id).sum()))
+                        for local_id in _local_ids
+                    ]
+                    _sizes.sort(key=lambda item: -item[1])
+                    _local_ids = [item[0] for item in _sizes[:_n_slots]]
+                _remap = np.zeros(max(_local_ids) + 1, dtype=np.uint16)
+                for _index, _old_id in enumerate(_local_ids):
+                    _remap[_old_id] = np.uint16(_lo + _index)
+                _filtered = np.where(
+                    np.isin(_variant_crop, _local_ids), _variant_crop, 0
+                ).astype(np.int32, copy=False)
+                _filtered = np.clip(_filtered, 0, max(_local_ids))
+                _remapped = _remap[_filtered]
+                _variant_full = _aff_sweep_full[_key]
+                _variant_slot = _variant_full[bbox]
+                _write_mask = (_remapped > 0) & (_variant_slot == 0)
+                if os.environ.get("PENGWIN_CONFINE_TO_MASK", "1") == "1":
+                    _other = np.zeros(img_shape, dtype=bool)
+                    for _other_anatomy, _other_info in merged.items():
+                        if _other_anatomy != anatomy and _other_info.get("mask") is not None:
+                            _other |= np.asarray(_other_info["mask"]).astype(bool)
+                    _other_bbox = _other[bbox]
+                    if _other_bbox.shape == _write_mask.shape:
+                        _write_mask = _write_mask & ~_other_bbox
+                _variant_slot[_write_mask] = _remapped[_write_mask]
+                _variant_full[bbox] = _variant_slot
+                _aff_sweep_full[_key] = _variant_full
+                log(
+                    f"[{anatomy}] affinity-sweep T={_threshold:.2f} painted "
+                    f"{int(_write_mask.sum())} voxels, {len(_local_ids)} fragments"
+                )
 
         # 라벨 재매핑 후 전체 볼륨에 paste
         # PENGWIN 스펙: Sacrum [1..50], LeftHip [51..100], RightHip [101..150], Femur [151..200]
@@ -1257,8 +1749,40 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         target_code = orientation_code(ref_img)
         oriented = sitk.DICOMOrient(lps_label_img, target_code)
         full_label = sitk.GetArrayFromImage(oriented).astype(np.uint16, copy=False)
+        for _key, _variant_full in list(_aff_sweep_full.items()):
+            _variant_img = sitk.GetImageFromArray(_variant_full.astype(np.uint16, copy=False))
+            _variant_img.SetSpacing(img_lps.GetSpacing())
+            _variant_img.SetOrigin(img_lps.GetOrigin())
+            _variant_img.SetDirection(img_lps.GetDirection())
+            _variant_oriented = sitk.DICOMOrient(_variant_img, target_code)
+            _aff_sweep_full[_key] = sitk.GetArrayFromImage(_variant_oriented).astype(
+                np.uint16, copy=False
+            )
+        for _key, _variant_full in list(_aff_seed_full.items()):
+            _variant_img = sitk.GetImageFromArray(_variant_full.astype(np.uint16, copy=False))
+            _variant_img.SetSpacing(img_lps.GetSpacing())
+            _variant_img.SetOrigin(img_lps.GetOrigin())
+            _variant_img.SetDirection(img_lps.GetDirection())
+            _variant_oriented = sitk.DICOMOrient(_variant_img, target_code)
+            _aff_seed_full[_key] = sitk.GetArrayFromImage(_variant_oriented).astype(
+                np.uint16, copy=False
+            )
+        for _key, _variant_full in list(_aff_seed_guard_full.items()):
+            _variant_img = sitk.GetImageFromArray(_variant_full.astype(np.uint16, copy=False))
+            _variant_img.SetSpacing(img_lps.GetSpacing())
+            _variant_img.SetOrigin(img_lps.GetOrigin())
+            _variant_img.SetDirection(img_lps.GetDirection())
+            _variant_oriented = sitk.DICOMOrient(_variant_img, target_code)
+            _aff_seed_guard_full[_key] = sitk.GetArrayFromImage(
+                _variant_oriented
+            ).astype(np.uint16, copy=False)
         log(f"reoriented label map: LPS -> {target_code} (shape={full_label.shape})")
 
+    LAST_AFFINITY_SWEEP_LABELS = _aff_sweep_full
+    LAST_AFFINITY_SEED_LABELS = _aff_seed_full
+    LAST_AFFINITY_SEED_METADATA = _aff_seed_metadata
+    LAST_AFFINITY_SEED_GUARD_LABELS = _aff_seed_guard_full
+    LAST_AFFINITY_SEED_GUARD_METADATA = _aff_seed_guard_metadata
     log(f"V0.4 pipeline complete in {time.time() - t_start:.1f}s, unique={sorted(int(v) for v in np.unique(full_label)[:20])}")
     return full_label
 
@@ -1274,23 +1798,13 @@ def main() -> int:
         log(f"input image: {image_path}")
         ref_img = sitk.ReadImage(str(image_path))
 
-        size = ref_img.GetSize()       # SimpleITK 순서 (X, Y, Z)
-        spacing = ref_img.GetSpacing() # SimpleITK 순서 (sx, sy, sz)
-        spacing_x, spacing_y, spacing_z = (float(s) for s in spacing)
-        physical_x_mm = float(size[0]) * spacing_x
-        physical_z_mm = float(size[2]) * spacing_z
-        log(
-            "spatial: "
-            f"size={size} spacing=({spacing_x:.4f},{spacing_y:.4f},{spacing_z:.4f}) "
-            f"physical_x_mm={physical_x_mm:.2f} physical_z_mm={physical_z_mm:.2f}"
-        )
-        # V0.4 라우팅: pelvic vs femur 결정은 Stage-1 Ds539 추론 뒤로 미룬다.
-        # 과거 spacing 룰(classify_pelvic_femur)은 femur 케이스를 거의 전부 pelvic 으로
-        # 오라우팅한다(검증 ~50%) — femur zero-stub 시절엔 무해했지만 femur 활성화 후엔
-        # 치명적이다. 대신 run_per_anatomy 가 Ds539 argmax 부피 비율로 라우팅한다(~90%).
-        #
+        # The organizers verified that the hidden test set conforms to this rule.
+        # Route before inference with their concrete functions; do not reinterpret
+        # SimpleITK/NumPy axes or override the result with the legacy RF router.
+        _official_route, official_anatomies = route_from_official_case_rule(image_path)
+
         # bone-skeleton 분해는 pelvic ROI fallback 으로만 쓰이므로 여기서 미리 계산해
-        # 넘긴다(femur 케이스에선 자연히 비어 무시된다). spacing 기반 분류는 사용하지 않는다.
+        # 넘긴다(femur 케이스에선 자연히 비어 무시된다).
         try:
             _img_lps_for_bone, _arr_clipped_for_bone = canonicalize_and_clip_image(ref_img)
             _sp_xyz = _img_lps_for_bone.GetSpacing()
@@ -1305,9 +1819,9 @@ def main() -> int:
             prerouted_bone_masks = None
 
         out_path = output_path(image_path)
-        # anatomies=None -> v2.0 target-family router when enabled, otherwise Ds539 volume route.
+        # The official case rule is authoritative; Stage A still supplies the ROI masks.
         label_arr = run_per_anatomy(
-            image_path, ref_img, prerouted_bone_masks, anatomies=None,
+            image_path, ref_img, prerouted_bone_masks, anatomies=official_anatomies,
         )
         write_label_map(label_arr, ref_img, out_path)
         log(f"wrote prediction -> {out_path}")

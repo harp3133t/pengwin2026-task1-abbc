@@ -71,13 +71,9 @@ ENV PENGWIN_ROOT=/opt/ml/model \
     MPLCONFIGDIR=/tmp/matplotlib \
     XDG_CACHE_HOME=/tmp/.cache
 
-# [v2.0 = v1.5 weights + target-family router]
-# Stage-A V301 fold_0 and Stage-B V308 fold_0 stay unchanged. A lightweight
-# random-forest router packaged in model.tar.gz chooses pelvic vs femur and
-# prevents non-target anatomies from reaching Stage-B. The router artifact must
-# be present at /opt/ml/model/stage1_router/stage1_target_router_fold0.joblib.
-# PENGWIN_TARGET_ROUTER=1 fails fast if the artifact is missing, which avoids a
-# silent fallback to the older Ds539 volume-ratio route.
+# Stage-A V301 fold_0 and Stage-B V308 fold_0 stay unchanged. Pelvic vs femur
+# routing uses the organizers' concrete SimpleITK/NumPy-axis rule directly in
+# inference.py. The legacy random-forest router is intentionally disabled.
 ENV PENGWIN_DS538_TRAINER=PengwinTrainerSTUNetBaseAffinityV308 \
     PENGWIN_DS538_FOLD=0 \
     PENGWIN_DS538_OUT_CH=13 \
@@ -85,8 +81,7 @@ ENV PENGWIN_DS538_TRAINER=PengwinTrainerSTUNetBaseAffinityV308 \
     PENGWIN_AGGLO_T=0.45 \
     PENGWIN_FUSION_DECODE=0 \
     PENGWIN_STAGEA_BONE_RECONCILE=0 \
-    PENGWIN_TARGET_ROUTER=1 \
-    PENGWIN_TARGET_ROUTER_PATH=/opt/ml/model/stage1_router/stage1_target_router_fold0.joblib
+    PENGWIN_TARGET_ROUTER=0
 
 # Grand Challenge security policy: container must not run as root.
 # Create a service user with no shell, no password, no home write permissions
