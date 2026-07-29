@@ -16,19 +16,46 @@ cascade** on a **STU-Net-B** backbone, I/O-compatible with the official
 
 ---
 
-## Current version — v2.0 target-family router
+## Upload candidate — v3.4 TotalSegmentator-init V308 (`T=0.75`)
+
+This is a candidate submission, not yet an Active replacement for the
+rollback-safe `model_v3_0`.
 
 | | |
 |---|---|
-| **Version** | **v2.0** — v1.5 cascade plus a lightweight target-family router |
-| **Stage A/B weights** | unchanged: Stage A `V301` fold0 anatomy STU-Net + Stage B `V308` fold0 ABBC-affinity STU-Net |
-| **New router** | CT-geometry random-forest router predicts `pelvic` vs `femur` after Stage A, then only forwards the target family to Stage B |
+| **Stage A** | refreshed-data scratch `V301`, fold 0, `checkpoint_best.pth` |
+| **Stage B** | `PengwinTrainerSTUNetBaseAffinityV308DeployedVal`, fold 0, initialized from the official TotalSegmentator `base_ep4k` backbone |
+| **Decoder** | affinity average-linkage with validation-selected `AGGLO_T=0.75` |
+| **Router** | unchanged v3.3 hybrid family router |
+| **Bundle** | `model_v3_4_totalpretrain_t075_20260728.tar.gz` |
+
+On the same refreshed 68-case fold-0 official-aligned proxy, the candidate at
+`T=0.75` reached instance F1 `0.930066`, HD95 `3.260951 mm`, ASSD
+`0.774668 mm`, and 426 split errors. The existing release scored F1 `0.933582`,
+HD95 `3.857464 mm`, ASSD `1.039815 mm`, and 457 split errors. Because `T=0.75`
+was selected on this validation set, the challenge upload is the independent
+generalization check.
+
+The Stage-B run stopped after completing epoch 180, at the beginning of epoch
+181; the bundle therefore uses its valid `checkpoint_best.pth`, not a
+`checkpoint_final.pth`.
+
+---
+
+## Current version — model_v3_0 (v3.3 hybrid family router)
+
+| | |
+|---|---|
+| **Deployed** | **`model_v3_0`** — Stage A `V301` → v3.3 hybrid family router → Stage B `V308` → `decode_affinity_agglo` (`AGGLO_T=0.45`) |
+| **Stage A/B weights** | Stage A `V301` fold0 anatomy STU-Net (Ds539, 5-class) + Stage B `V308` fold0 ABBC-affinity STU-Net (Ds538, 13ch = 4 ABBC + 9 affinity) |
+| **v3.3 hybrid router** | RandomForest is **PRIMARY when confident** (`|p_femur−0.5| ≥ 0.15`); the organizers' official pelvic/femur rule is a **tiebreak only** on RF-uncertainty |
 | **Router artifact** | `stage1_router/stage1_target_router_fold0.joblib` (local artifact, ignored by git; package/upload with model payload when deploying) |
+| **History** | v2.2 = prelim rank 10; v3.2 (official-rule made authoritative) regressed to val rank 44 via 13% misroute; v3.3 hybrid fixed it (val rank 30). TEST phase: F1 0.898, ≈ rank 13 |
 | **Why** | prevents wrong-family Stage2 calls, e.g. femur fragments in pelvic-only cases or hip/pelvis fragments in femur-only cases |
 
 The router is not a replacement for STU-Net. It is a deterministic post-Stage-A
-gate trained on CT/FOV/bone-geometry features. STU-Net remains the anatomy and
-fragment segmentation model.
+gate over CT/FOV/bone-geometry features (RF) with the official rule as a
+tiebreak. STU-Net remains the anatomy and fragment segmentation model.
 
 ---
 
@@ -37,7 +64,7 @@ fragment segmentation model.
 | Lever | What it does | Why it matters |
 |---|---|---|
 | **2-stage cascade** | Stage A finds the *anatomy* (sacrum / L-hip / R-hip / femur); Stage B splits each bone into *fracture fragments* | decouples "which bone" from "how it broke" |
-| **v2.0 target-family router** | classifies the scan as `pelvic` or `femur` and suppresses non-target anatomies before Stage B | removes wrong-family false positive fragments without changing the STU-Net weights |
+| **v3.3 hybrid family router** | classifies the scan as `pelvic` or `femur` (RF primary + official-rule tiebreak) and suppresses non-target anatomies before Stage B | removes wrong-family false positive fragments without changing the STU-Net weights |
 | **STU-Net-B + TotalSegmentator warm-start** | a large-scale skeletal pretrain transferred to both stages | strong features from limited (340-case) data |
 | **ABBC fracture target** | a 4-class `background / border / boundary / core` field (PENGWIN-2024 winner formulation) | turns instance separation into a learnable dense target |
 | **Learned affinity head** | 9 multi-scale same-instance edges (short = attractive, long = **repulsive**) decoded by **average-linkage agglomeration** (GASP) | breaks the *touching-fragment merge* ceiling without mutex over-splitting |
@@ -143,9 +170,11 @@ flowchart LR
 - **L4 — 480 s time budget**: a per-anatomy ETA guard guarantees the 10-minute
   Grand-Challenge per-case limit (it emits zero for an anatomy only if the crop
   would blow the budget).
-- **v2.0 target-family router**: after Stage A, a small random-forest router
+- **v3.3 hybrid family router**: after Stage A, a small random-forest router
   predicts the case family (`pelvic` or `femur`) from CT shape/FOV/HU and sampled
-  bone-geometry features. The router then forces Stage B to run only
+  bone-geometry features. The RF is **primary when confident** (`|p_femur−0.5| ≥
+  0.15`); the organizers' official pelvic/femur rule is a **tiebreak only** on
+  RF-uncertainty. The router then forces Stage B to run only
   `Sacrum+LeftHip+RightHip` for pelvic cases or `Femur` for femur cases. This
   blocks wrong-family fragments while preserving the original Stage A and Stage B
   STU-Net weights.
@@ -327,8 +356,8 @@ github_repo/
 
 ```bash
 git push origin main
-git tag v2.0 && git push origin v2.0
-# Grand Challenge → Container Images → Link to GitHub → select tag v2.0 → wait for "Active"
+git tag v3.3 && git push origin v3.3
+# Grand Challenge → Container Images → Link to GitHub → select tag v3.3 → wait for "Active"
 # Upload model.tar.gz to the algorithm's "Models" tab
 # Submit: paste docs/Comment.txt, upload docs/description.pdf, select Algorithm, Submit
 ```
@@ -350,7 +379,7 @@ payload or inference fails fast.
 | Stage-B input | per-bone masked CT | **CT-only, leak-free** (anatomy prob used only for routing) |
 | Decoder | CC + KD-tree NN | **core-seed watershed** + **average-linkage agglomeration** + sacrum merge |
 | Laterality | default (mirror all axes) | **L↔R mirror disabled** for anatomy (87.6 % of hip errors) |
-| Routing | volume ratio | bone-skeleton ∪ Ds539 argmax + sanity fallback + **v2.0 target-family router** + **time budget** |
+| Routing | volume ratio | bone-skeleton ∪ Ds539 argmax + sanity fallback + **v3.3 hybrid family router** + **time budget** |
 | ID offset | user post-step | embedded in `inference.py` |
 
 The label range, file naming, `dataset.json` schema, and output contract are
