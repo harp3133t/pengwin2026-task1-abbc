@@ -99,6 +99,16 @@ DS539_OUTPUT_CHANNELS = 5  # background, Sacrum, LeftHip, RightHip, Femur
 #     model input channel — that is legitimate cascade routing, not leakage).
 DS538_DATASET = "Dataset538_PelvicFemurBICMFragmentV5"
 DS538_TRAINER = os.environ.get("PENGWIN_DS538_TRAINER", "PengwinTrainerSTUNetBaseABBCPhase1V302")
+DS538_EXPERT_TRAINERS = {
+    anatomy: trainer
+    for anatomy, trainer in {
+        "Sacrum": os.environ.get("PENGWIN_DS538_TRAINER_SACRUM", ""),
+        "LeftHip": os.environ.get("PENGWIN_DS538_TRAINER_HIP", ""),
+        "RightHip": os.environ.get("PENGWIN_DS538_TRAINER_HIP", ""),
+        "Femur": os.environ.get("PENGWIN_DS538_TRAINER_FEMUR", ""),
+    }.items()
+    if trainer.strip()
+}
 DS538_PLANS = "nnUNetResEncUNetLPlans"
 DS538_CONFIG = "3d_fullres"
 DS538_FOLD = os.environ.get("PENGWIN_DS538_FOLD", "0")  # int-string or "all" (fold_all); default "0" = v1.5
@@ -1206,9 +1216,10 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         torch.cuda.empty_cache()
 
     # === Layer 4: anatomy 별 Ds538 추론 → ABBC decode → 전체 라벨에 paste ===
-    ds538_predictor = build_predictor(
-        DS538_DATASET, DS538_TRAINER, DS538_PLANS, DS538_CONFIG, DS538_FOLD,
-    )
+    # Production defaults to one unified trainer. v3.5 maps each valid anatomy
+    # to its expert through Docker ENV while retaining the unified fallback.
+    ds538_predictor = None
+    active_ds538_trainer = None
 
     full_label = np.zeros(img_shape, dtype=np.uint16)
     for anatomy in anatomies:
@@ -1274,6 +1285,28 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         ct_lut_crop = ct_lut_full[bbox]
         ds538_image_4d = ct_lut_crop[None]  # (1, Z, Y, X)
         ds538_props = {"spacing": list(spacing_zyx)}
+
+        desired_ds538_trainer = DS538_EXPERT_TRAINERS.get(
+            anatomy, DS538_TRAINER
+        )
+        if desired_ds538_trainer != active_ds538_trainer:
+            if ds538_predictor is not None:
+                del ds538_predictor
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            ds538_predictor = build_predictor(
+                DS538_DATASET,
+                desired_ds538_trainer,
+                DS538_PLANS,
+                DS538_CONFIG,
+                DS538_FOLD,
+            )
+            active_ds538_trainer = desired_ds538_trainer
+            log(
+                f"[{anatomy}] Stage-B trainer selected: "
+                f"{desired_ds538_trainer}"
+            )
 
         # Ds538 sliding-window 추론 실행
         ds538_logits_pp, ds538_data_props = predict_logits_full(

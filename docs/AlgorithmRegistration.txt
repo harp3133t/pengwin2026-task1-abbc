@@ -1,6 +1,6 @@
 ================================================================
 Grand Challenge - "Create Algorithm for Challenge" form fill
-PENGWIN 2026 Task 1 Submission (v3.4 upload candidate)
+PENGWIN 2026 Task 1 Submission (v3.5 always-expert upload candidate)
 ================================================================
 
 [Title] (single line, method identifier)
@@ -12,30 +12,26 @@ Anatomy-Routed ABBC-Affinity STU-Net Cascade (PENGWIN-Auto)
 ----------------------------------------------------------------
 Pelvic and femoral fracture-fragment instance segmentation in CT.
 
-The method is a serial two-stage STU-Net-B cascade. Stage A is a refreshed-data
-5-class anatomy model trained from scratch and predicts sacrum, left/right
-hipbone and femur. A hybrid case-family router uses a random forest when
-confident and the organizers' acquisition rule only as an uncertainty
-tiebreak. Stage B is a 13-channel ABBC+9-affinity model initialized from the
-official TotalSegmentator base_ep4k backbone and fine-tuned on refreshed PENGWIN
-data. Average-linkage agglomeration at validation-selected T=0.75 converts the
-affinities to fragment instances. Outputs use the official ranges: 1-50 sacrum,
-51-100 left hip, 101-150 right hip and 151-200 femur.
-
-The v3.4 candidate uses fold-0 checkpoint_best for both stages. The Stage-B run
-ended after epoch 180 without checkpoint_final, so its valid best checkpoint is
-packaged explicitly. Local 68-case official-aligned evaluation: Dice 0.8821,
-HD95 3.261 mm, ASSD 0.775 mm and instance F1 0.9301.
+The method is a serial two-stage STU-Net-B cascade. Stage A predicts sacrum,
+left/right hipbone and femur, followed by the validated hybrid pelvic/femur
+router. Stage B always selects the corresponding Sacrum, shared-Hip, or Femur
+expert. Each expert starts from the TotalSegmentator-base V308 checkpoint,
+freezes the encoder, and tunes its decoder and ABBC+9-affinity heads for three
+epochs. Average-linkage agglomeration at T=0.75 converts affinities to instances
+in the official 1-200 ranges. On a 68-patient/132-anatomy proxy, always-expert
+reached IoU-F 0.8168, Dice 0.8556, HD95 6.687 mm, ASSD 1.852 mm and instance F1
+0.9164. It improves overlap/surface metrics but adds 12 split errors, so it is
+an independent leaderboard candidate rather than an automatic replacement.
 ----------------------------------------------------------------
 
 [Job requires gpu type]
 ----------------------------------------------------------------
 NVIDIA T4 Tensor Core GPU (16 GiB VRAM)
 
-The two STU-Net-B models are loaded and released serially, so peak VRAM is the
-maximum of a single stage rather than the sum of both stages.
+Stage A and each expert are loaded and released serially, so peak VRAM is the
+maximum of one network rather than the sum of all experts.
 
 ================================================================
-The existing model_v3_0 remains the rollback model until v3.4 passes the
+The existing unified model remains the rollback model until v3.5 passes the
 Grand Challenge container test and is deliberately activated.
 ================================================================

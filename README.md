@@ -14,6 +14,38 @@
 
 ---
 
+## 🧪 업로드 후보 — v3.5 anatomy experts always-on (`T=0.75`)
+
+> **별도 leaderboard 후보이며 아직 Active가 아니다.** v3.4의 Stage A,
+> hybrid family router, largest-CC ROI, affinity decoder를 고정하고 Stage B만
+> Sacrum / shared Hip / Femur epoch-3 전문가로 항상 교체한다.
+
+| | |
+|---|---|
+| **Stage A** | v3.4와 동일: refreshed-data scratch `V301`, fold 0 |
+| **Stage B** | `V308SacrumExpertDeployedVal`, `V308HipExpertDeployedVal`, `V308FemurExpertDeployedVal`, fold 0 |
+| **초기화/튜닝** | v3.4 TotalSegmentator-init V308에서 시작, encoder 고정, decoder+heads 3 epoch |
+| **Decoder / ROI** | affinity average-linkage `T=0.75`; Stage1 `largest` 정책 유지 |
+| **예정 번들** | `model_v3_5_always_expert_t075_20260805.tar.gz` |
+
+동일한 68-case / 132-anatomy end-to-end proxy-v2에서:
+
+| 구성 | IoU-F | Dice | HD95 mm ↓ | ASSD mm ↓ | Instance F1 | Split ↓ |
+|---|---:|---:|---:|---:|---:|---:|
+| v3.4 unified | 0.811828 | 0.850707 | 6.752 | 1.891 | **0.919150** | **318** |
+| selective expert OOF | 0.814812 | 0.854027 | 6.835 | 1.897 | 0.921675 | 320 |
+| **v3.5 always expert** | **0.816842** | **0.855649** | **6.687** | **1.852** | 0.916377 | 330 |
+
+항상 전문가는 overlap/surface proxy가 가장 좋지만 precision과 instance F1이
+낮고 split이 12개 증가한다. 따라서 자동 승격용이 아니라, challenge 공식 점수가
+IoU-F·surface 개선을 얼마나 반영하는지 확인하기 위한 독립 후보 제출이다.
+
+챌린지 업로드 시 GitHub `v3.5` 태그로 컨테이너를 빌드하고, 별도 Models 탭에는
+`model.tar.gz`를 업로드해 연결한다. 두 artifact 모두 플랫폼 container test가
+통과하기 전에는 기존 Active 버전을 교체하지 않는다.
+
+---
+
 ## 🧪 업로드 후보 — v3.4 TotalSegmentator-init V308 (`T=0.75`)
 
 > **후보이며 아직 Active 승격 전이다.** 기존 `model_v3_0`/v3.3 hybrid router는
@@ -1223,6 +1255,9 @@ python eval.py task1-abbc-eval --dataset-id 538 \
 | `PENGWIN_DS539_TRAINER` | `...AnatomyV301` | Stage-A trainer |
 | `PENGWIN_DS539_FOLD` | `0` | Stage-A fold (`0` / `all`) |
 | `PENGWIN_DS538_TRAINER` | Dockerfile: `...AffinityV308DeployedVal` | Stage-B trainer |
+| `PENGWIN_DS538_TRAINER_SACRUM` | Dockerfile: `...V308SacrumExpertDeployedVal` | Sacrum expert trainer |
+| `PENGWIN_DS538_TRAINER_HIP` | Dockerfile: `...V308HipExpertDeployedVal` | Shared left/right hip expert trainer |
+| `PENGWIN_DS538_TRAINER_FEMUR` | Dockerfile: `...V308FemurExpertDeployedVal` | Femur expert trainer |
 | `PENGWIN_DS538_FOLD` | Dockerfile: `0` | Stage-B fold |
 | `PENGWIN_DS538_OUT_CH` | Dockerfile: `13` | 4=ABBC / 13=ABBC+affinity |
 | `PENGWIN_TARGET_ROUTER` | Dockerfile: `1` | v2.0 target-family router 사용 |

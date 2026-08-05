@@ -2292,3 +2292,147 @@ class PengwinTrainerSTUNetBaseAffinityV308DeployedVal(
             "npred": aggregate(n_pred),
             "ngt": aggregate(n_gt),
         }
+
+
+class _V308AnatomyExpertFineTuneMixin:
+    """Turn the evaluated unified V308 model into one anatomy expert.
+
+    The parent grouped fold remains authoritative. This mixin only filters the
+    already separated train/validation keys, so no held-out patient can move
+    into training. The encoder is frozen and each expert learns an independent
+    decoder plus ABBC/affinity heads from the full evaluated v3.4 checkpoint.
+    """
+
+    EXPERT_NAME = "unset"
+    EXPERT_ANATOMIES: tuple[str, ...] = ()
+
+    def __init__(
+        self,
+        plans: dict,
+        configuration: str,
+        fold: int,
+        dataset_json: dict,
+        unpack_dataset: bool = True,
+        device: torch.device = torch.device("cuda"),
+    ):
+        import random
+
+        seed = int(os.environ.get("PENGWIN_EXPERT_SEED", "12345"))
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        super().__init__(
+            plans,
+            configuration,
+            fold,
+            dataset_json,
+            unpack_dataset=unpack_dataset,
+            device=device,
+        )
+        self.batch_size = int(
+            os.environ.get("PENGWIN_EXPERT_BATCH_SIZE", str(self.batch_size))
+        )
+        self.print_to_log_file(
+            f"[AnatomyExpert] name={self.EXPERT_NAME} "
+            f"anatomies={self.EXPERT_ANATOMIES} seed={seed} "
+            f"batch_size={self.batch_size} trainable=decoder+heads"
+        )
+
+    @classmethod
+    def _matches_expert(cls, key: str) -> bool:
+        return any(str(key).endswith(f"_{name}") for name in cls.EXPERT_ANATOMIES)
+
+    def do_split(self):
+        train_keys, validation_keys = super().do_split()
+        train_keys = [key for key in train_keys if self._matches_expert(key)]
+        validation_keys = [
+            key for key in validation_keys if self._matches_expert(key)
+        ]
+        if not train_keys or not validation_keys:
+            raise RuntimeError(
+                f"{self.EXPERT_NAME} expert has an empty split: "
+                f"train={len(train_keys)} validation={len(validation_keys)}"
+            )
+        train_cases = {str(key).split("_")[1] for key in train_keys}
+        validation_cases = {
+            str(key).split("_")[1] for key in validation_keys
+        }
+        overlap = sorted(train_cases & validation_cases)
+        if overlap:
+            raise RuntimeError(
+                f"{self.EXPERT_NAME} expert patient leakage: {overlap[:10]}"
+            )
+        self.print_to_log_file(
+            f"[AnatomyExpert] filtered split: train={len(train_keys)} "
+            f"validation={len(validation_keys)} "
+            f"train_patients={len(train_cases)} "
+            f"validation_patients={len(validation_cases)}"
+        )
+        return train_keys, validation_keys
+
+    @staticmethod
+    def _unwrapped_network(network):
+        while hasattr(network, "module"):
+            network = network.module
+        if hasattr(network, "_orig_mod"):
+            network = network._orig_mod
+        return network
+
+    def configure_optimizers(self):
+        network = self._unwrapped_network(self.network)
+        trainable_prefixes = (
+            "upsample_layers.",
+            "conv_blocks_localization.",
+            "seg_outputs.",
+        )
+        trainable = []
+        for name, parameter in network.named_parameters():
+            enabled = name.startswith(trainable_prefixes)
+            parameter.requires_grad_(enabled)
+            if enabled:
+                trainable.append(parameter)
+        if not trainable:
+            raise RuntimeError("anatomy expert found no decoder/head parameters")
+        optimizer = SGD(
+            trainable,
+            self.initial_lr,
+            weight_decay=self.weight_decay,
+            momentum=0.99,
+            nesterov=True,
+        )
+        self.lr_scheduler = _PengwinPolyLR(
+            optimizer, self.initial_lr, self.num_epochs
+        )
+        trainable_count = sum(parameter.numel() for parameter in trainable)
+        total_count = sum(parameter.numel() for parameter in network.parameters())
+        self.print_to_log_file(
+            f"[AnatomyExpert] trainable_parameters={trainable_count}/"
+            f"{total_count} ({100.0 * trainable_count / total_count:.2f}%)"
+        )
+        return optimizer, self.lr_scheduler
+
+
+class PengwinTrainerSTUNetBaseAffinityV308SacrumExpertDeployedVal(
+    _V308AnatomyExpertFineTuneMixin,
+    PengwinTrainerSTUNetBaseAffinityV308DeployedVal,
+):
+    EXPERT_NAME = "sacrum"
+    EXPERT_ANATOMIES = ("Sacrum",)
+
+
+class PengwinTrainerSTUNetBaseAffinityV308HipExpertDeployedVal(
+    _V308AnatomyExpertFineTuneMixin,
+    PengwinTrainerSTUNetBaseAffinityV308DeployedVal,
+):
+    EXPERT_NAME = "hip"
+    EXPERT_ANATOMIES = ("LeftHip", "RightHip")
+
+
+class PengwinTrainerSTUNetBaseAffinityV308FemurExpertDeployedVal(
+    _V308AnatomyExpertFineTuneMixin,
+    PengwinTrainerSTUNetBaseAffinityV308DeployedVal,
+):
+    EXPERT_NAME = "femur"
+    EXPERT_ANATOMIES = ("Femur",)
