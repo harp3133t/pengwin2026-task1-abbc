@@ -76,14 +76,17 @@ ENV PENGWIN_ROOT=/opt/ml/model \
     MPLCONFIGDIR=/tmp/matplotlib \
     XDG_CACHE_HOME=/tmp/.cache
 
-# [v3.4 candidate = refreshed-data scratch V301 + TotalSegmentator-init V308]
-# Stage-A uses the refreshed-data scratch fold_0 checkpoint. Stage-B uses the
-# TotalSegmentator base_ep4k-initialized V308 checkpoint selected with the full
-# deployed 13-channel affinity decoder. The v3.3 hybrid family router remains
-# enabled and its joblib artifact is packaged beside the nnU-Net weights.
+# [v3.5 candidate = refreshed-data V301 + always-on anatomy experts]
+# Stage-A and the hybrid family router stay fixed. Every routed Stage-B anatomy
+# uses its epoch-3 specialist (Sacrum, shared Left/Right Hip, or Femur), all
+# initialized from the v3.4 TotalSegmentator-base V308 checkpoint. The unified
+# trainer remains an explicit fallback but is not selected for a valid anatomy.
 ENV PENGWIN_DS539_TRAINER=PengwinTrainerSTUNetBaseAnatomyV301 \
     PENGWIN_DS539_FOLD=0 \
     PENGWIN_DS538_TRAINER=PengwinTrainerSTUNetBaseAffinityV308DeployedVal \
+    PENGWIN_DS538_TRAINER_SACRUM=PengwinTrainerSTUNetBaseAffinityV308SacrumExpertDeployedVal \
+    PENGWIN_DS538_TRAINER_HIP=PengwinTrainerSTUNetBaseAffinityV308HipExpertDeployedVal \
+    PENGWIN_DS538_TRAINER_FEMUR=PengwinTrainerSTUNetBaseAffinityV308FemurExpertDeployedVal \
     PENGWIN_DS538_FOLD=0 \
     PENGWIN_DS538_OUT_CH=13 \
     PENGWIN_AFFINITY_DECODE=1 \

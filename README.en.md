@@ -16,6 +16,26 @@ cascade** on a **STU-Net-B** backbone, I/O-compatible with the official
 
 ---
 
+## Upload candidate — v3.5 always-on anatomy experts (`T=0.75`)
+
+This is a separate leaderboard candidate, not an Active replacement. It keeps
+v3.4 Stage A, hybrid family routing, largest-component ROIs, and affinity
+decoding fixed, while always selecting the epoch-3 Sacrum, shared-Hip, or Femur
+Stage-B expert. The experts start from the TotalSegmentator-initialized v3.4
+V308 model and tune only the decoder and heads with the encoder frozen.
+
+| Configuration | IoU-F | Dice | HD95 mm ↓ | ASSD mm ↓ | Instance F1 | Split ↓ |
+|---|---:|---:|---:|---:|---:|---:|
+| v3.4 unified | 0.811828 | 0.850707 | 6.752 | 1.891 | **0.919150** | **318** |
+| selective expert OOF | 0.814812 | 0.854027 | 6.835 | 1.897 | 0.921675 | 320 |
+| **v3.5 always expert** | **0.816842** | **0.855649** | **6.687** | **1.852** | 0.916377 | 330 |
+
+Always-on experts have the best overlap and surface proxies but reduce
+precision/instance F1 and add 12 split errors. This upload tests how the hidden
+official score values that trade-off; it must not be auto-activated.
+
+---
+
 ## Upload candidate — v3.4 TotalSegmentator-init V308 (`T=0.75`)
 
 This is a candidate submission, not yet an Active replacement for the
@@ -355,10 +375,12 @@ github_repo/
 ## Build & submit
 
 ```bash
-git push origin main
-git tag v3.3 && git push origin v3.3
-# Grand Challenge → Container Images → Link to GitHub → select tag v3.3 → wait for "Active"
-# Upload model.tar.gz to the algorithm's "Models" tab
+git push harp3133t main
+git tag -a v3.5 -m "v3.5 always-on anatomy experts"
+git push harp3133t v3.5
+# Grand Challenge → Container Images: wait for the v3.5 build to finish.
+# Upload model.tar.gz to the algorithm's Models tab and associate it with the image.
+# Run the platform container test before manually making either artifact Active.
 # Submit: paste docs/Comment.txt, upload docs/description.pdf, select Algorithm, Submit
 ```
 

@@ -1,4 +1,4 @@
-"""Static deployment-contract checks for the v3.4 TotalSegmentator candidate."""
+"""Static deployment-contract checks for the v3.5 always-expert candidate."""
 
 from __future__ import annotations
 
@@ -16,6 +16,18 @@ def test_dockerfile_selects_the_evaluated_candidate():
     assert (
         "PENGWIN_DS538_TRAINER="
         "PengwinTrainerSTUNetBaseAffinityV308DeployedVal"
+    ) in dockerfile
+    assert (
+        "PENGWIN_DS538_TRAINER_SACRUM="
+        "PengwinTrainerSTUNetBaseAffinityV308SacrumExpertDeployedVal"
+    ) in dockerfile
+    assert (
+        "PENGWIN_DS538_TRAINER_HIP="
+        "PengwinTrainerSTUNetBaseAffinityV308HipExpertDeployedVal"
+    ) in dockerfile
+    assert (
+        "PENGWIN_DS538_TRAINER_FEMUR="
+        "PengwinTrainerSTUNetBaseAffinityV308FemurExpertDeployedVal"
     ) in dockerfile
     assert "PENGWIN_DS538_FOLD=0" in dockerfile
     assert "PENGWIN_DS538_OUT_CH=13" in dockerfile
