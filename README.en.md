@@ -16,6 +16,29 @@ cascade** on a **STU-Net-B** backbone, I/O-compatible with the official
 
 ---
 
+## Upload candidate — v3.6 A1 progressive Affinity-ABBC
+
+This candidate freezes the v3.5 Stage A, hybrid RF router, largest-component
+ROI policy, anatomy experts and every model weight. It changes only the
+deterministic decoder:
+
+`1/3/9-voxel RAG veto → full ABBC split/merge → A1 small-candidate 3/3 affinity`.
+
+Predicted merge candidates whose smaller side is 1–5 cm³ require agreement
+from all three affinity ranges; larger candidates require two of three.
+
+| Decoder | Dice | HD95 mm ↓ | ASSD mm ↓ | Recall | Precision | F1 | Merge ↓ | Split ↓ | Small recall |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| v3.5 | 0.855649 | 6.686971 | 1.852273 | 0.931412 | **0.932197** | **0.916377** | 21 | **330** | — |
+| A0, affinity 2/3 | 0.883147 | **3.651583** | **0.901114** | 0.943723 | 0.885290 | 0.896711 | 9 | 409 | 33/53 |
+| **v3.6 A1** | **0.885316** | 3.655591 | 0.901434 | **0.946248** | 0.885417 | 0.897919 | **9** | 412 | **34/53** |
+
+These are frozen 68-case / 132-anatomy official-aligned local proxy results,
+not hidden-test scores. The v3.6 model archive is byte-identical to v3.5; keep
+the previous image/model pair available until the platform container test.
+
+---
+
 ## Upload candidate — v3.5 always-on anatomy experts (`T=0.75`)
 
 This is a separate leaderboard candidate, not an Active replacement. It keeps
@@ -376,9 +399,9 @@ github_repo/
 
 ```bash
 git push harp3133t main
-git tag -a v3.5 -m "v3.5 always-on anatomy experts"
-git push harp3133t v3.5
-# Grand Challenge → Container Images: wait for the v3.5 build to finish.
+git tag -a v3.6 -m "v3.6 A1 progressive Affinity-ABBC"
+git push harp3133t v3.6
+# Grand Challenge → Container Images: wait for the v3.6 build to finish.
 # Upload model.tar.gz to the algorithm's Models tab and associate it with the image.
 # Run the platform container test before manually making either artifact Active.
 # Submit: paste docs/Comment.txt, upload docs/description.pdf, select Algorithm, Submit

@@ -1,127 +1,106 @@
-# PENGWIN Task 1 v3.5 — Always-On Experts
+# PENGWIN Task 1 v3.6 — A1 Progressive Affinity-ABBC
 
-Algorithm Description · 2026-08-05
+Algorithm Description · 2026-08-16
 
 # 1. Submission status
 
-`v3.5-always-expert-t075` is an upload candidate, not an automatically activated
-replacement. The current unified-model package remains available as the
-rollback model until this candidate passes the Grand Challenge container test.
-
-Relative to v3.4, this candidate changes only Stage-B checkpoint selection:
-each routed anatomy always uses its Sacrum, shared-Hip, or Femur expert. Stage A,
-the validated hybrid target-family router, largest-component ROI policy,
-agglomeration threshold, and Grand Challenge input/output contract are fixed.
+`v3.6-a1-progressive-affinity` is a separate upload candidate. It keeps the
+v3.5 Stage-A model, hybrid random-forest family router, largest-component ROI
+policy, anatomy-specific Stage-B experts and all model weights unchanged. Only
+the deterministic instance decoder is replaced by the validation-selected A1
+pipeline described below. The previous image/model pair remains available for
+rollback until the candidate passes the Grand Challenge container test.
 
 # 2. Method overview
 
 The submission performs per-fragment instance segmentation of pelvic and
-femoral fractures using a serial two-stage STU-Net-B cascade:
+femoral fractures with a serial two-stage STU-Net-B cascade:
 
 1. **Stage A — anatomy.** A 5-class whole-volume model identifies sacrum,
    left/right hipbone and femur.
-2. **Hybrid family routing.** A random-forest classifier selects pelvic or femur
-   when confident. The organizers' official acquisition rule is used only when
-   the RF is uncertain.
+2. **Hybrid family routing.** A random forest selects pelvic or femur when
+   confident; the organizers' acquisition rule is the uncertainty tiebreak.
 3. **Stage B — fracture experts.** The routed anatomy selects a Sacrum,
-   shared-Left/Right-Hip, or Femur expert. Each emits four ABBC channels and nine
-   learned same-instance affinity channels.
-4. **Instance decoding.** Average-linkage agglomeration converts the affinity
-   field into fragment instances and removes components below about 1 cm3.
-5. **Assembly.** Instances are mapped to the official label ranges: sacrum
-   1-50, left hip 51-100, right hip 101-150 and femur 151-200.
+   shared-Left/Right-Hip or Femur expert. It emits four ABBC channels and nine
+   learned same-instance affinity channels at 1-, 3- and 9-voxel offsets.
+4. **A1 decoding.** Short-range affinity creates watershed supervoxels. Robust
+   3/9-voxel evidence vetoes weak RAG merges. Full ABBC then splits partitions
+   missing a fracture boundary and merges interfaces unsupported by Boundary.
+   Finally, candidate fragments from 1 to 5 cm3 require agreement from all
+   three affinity ranges; larger candidates require two of three.
+5. **Assembly.** Instances use the official ranges: sacrum 1-50, left hip
+   51-100, right hip 101-150 and femur 151-200.
 
-# 3. Deployed model contract
+# 3. Frozen model contract
 
 | Component | Deployed value |
 |---|---|
-| Stage A dataset | `Dataset539_PelvicFemurAnatomyV3` |
-| Stage A trainer | `PengwinTrainerSTUNetBaseAnatomyV301` |
-| Stage A fold/checkpoint | fold 0 / `checkpoint_best.pth` |
-| Stage A initialization | from scratch on refreshed PENGWIN anatomy data |
+| Stage A | `Dataset539_PelvicFemurAnatomyV3`, `PengwinTrainerSTUNetBaseAnatomyV301`, fold 0 |
 | Router | v3.3 hybrid RF, confidence margin 0.15 |
 | Stage B dataset | `Dataset538_PelvicFemurBICMFragmentV5` |
-| Stage B trainers | `...V308SacrumExpertDeployedVal`, `...V308HipExpertDeployedVal`, `...V308FemurExpertDeployedVal` |
+| Stage B experts | `...V308SacrumExpertDeployedVal`, `...V308HipExpertDeployedVal`, `...V308FemurExpertDeployedVal` |
 | Stage B fold/checkpoint | fold 0 / `checkpoint_best.pth` |
-| Stage B initialization | v3.4 V308 initialized from official TotalSegmentator `base_ep4k` |
-| Expert tuning | encoder frozen; decoder and heads tuned for 3 epochs |
 | Stage B output | 13 channels: 4 ABBC + 9 affinity |
-| Decoder | `decode_affinity_agglo`, `T=0.75` |
+| Initial partition | 1/3/9-voxel RAG-veto, `T=0.75`, minimum 32 range pairs |
+| ABBC refinement | 3 split passes, 400-voxel minimum piece, Boundary merge margin `0.05/3` |
+| A1 small-candidate rule | predicted smaller side 1,000-5,000 mm3: affinity 3/3; otherwise 2/3 |
+| A1 affinity evidence | mean same-instance affinity >=0.55 and at least 8 observations per range |
 
-Only Stage B is TotalSegmentator-initialized. Stage A is the refreshed-data
-scratch model. The three packaged expert artifacts are their deterministic
-epoch-3 `checkpoint_best.pth` files.
+The v3.6 model archive is byte-identical to v3.5. This isolates the decoder
+change and avoids introducing a new training or weight-selection variable.
 
 # 4. Model archive layout
 
-Grand Challenge extracts the uploaded archive directly under `/opt/ml/model`.
-The tarball is created with `tar -C model_payload -czf model.tar.gz .`, producing:
+Grand Challenge extracts the archive directly under `/opt/ml/model`:
 
 ```text
 /opt/ml/model/
 ├── nnunet/results/
 │   ├── Dataset539_PelvicFemurAnatomyV3/
-│   │   └── PengwinTrainerSTUNetBaseAnatomyV301__nnUNetResEncUNetLPlans__3d_fullres/
+│   │   └── PengwinTrainerSTUNetBaseAnatomyV301__.../fold_0/
 │   └── Dataset538_PelvicFemurBICMFragmentV5/
-│       ├── PengwinTrainerSTUNetBaseAffinityV308SacrumExpertDeployedVal__.../
-│       ├── PengwinTrainerSTUNetBaseAffinityV308HipExpertDeployedVal__.../
-│       └── PengwinTrainerSTUNetBaseAffinityV308FemurExpertDeployedVal__.../
+│       ├── PengwinTrainerSTUNetBaseAffinityV308SacrumExpertDeployedVal__.../fold_0/
+│       ├── PengwinTrainerSTUNetBaseAffinityV308HipExpertDeployedVal__.../fold_0/
+│       └── PengwinTrainerSTUNetBaseAffinityV308FemurExpertDeployedVal__.../fold_0/
 └── stage1_router/stage1_target_router_fold0.joblib
 ```
 
-The router artifact is serialized natively with scikit-learn 1.6.1, matching the
-container dependency. Its predictions were checked against the original
-scikit-learn 1.7.2 serialization on 4,096 deterministic inputs.
-
 # 5. Local evaluation
 
-All rows below use the same 68-patient / 132-anatomy end-to-end
-official-aligned proxy-v2 evaluation set.
+All rows use the same frozen 68-patient / 132-anatomy official-aligned local
+proxy. They are not hidden-test leaderboard scores.
 
-| Experiment | IoU-F | Dice | HD95 (mm) | ASSD (mm) | Instance F1 | Split |
-|---|---:|---:|---:|---:|---:|---:|
-| v3.4 unified | 0.811828 | 0.850707 | 6.752 | 1.891 | **0.919150** | **318** |
-| Selective expert OOF | 0.814812 | 0.854027 | 6.835 | 1.897 | 0.921675 | 320 |
-| v3.5 always expert | **0.816842** | **0.855649** | **6.687** | **1.852** | 0.916377 | 330 |
+| Decoder | Dice | HD95 mm | ASSD mm | Recall | Precision | F1 | Merge | Split |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| v3.5 short affinity | 0.855649 | 6.686971 | 1.852273 | 0.931412 | **0.932197** | **0.916377** | 21 | **330** |
+| Aggressive Boundary-only | 0.882873 | 3.993362 | 0.983234 | **0.948142** | 0.856773 | 0.879598 | **7** | 459 |
+| A0, affinity 2/3 | 0.883147 | **3.651583** | **0.901114** | 0.943723 | 0.885290 | 0.896711 | 9 | 409 |
+| **v3.6 A1, small 3/3** | **0.885316** | 3.655591 | 0.901434 | 0.946248 | 0.885417 | 0.897919 | 9 | 412 |
 
-Relative to unified Stage B, always-on experts improve IoU-F by 0.005013,
-Dice by 0.004942, HD95 by 0.065 mm, and ASSD by 0.038 mm. Precision decreases
-by 0.010913, instance F1 decreases by 0.002772, and split errors increase by
-12. This mixed trade-off is why v3.5 is a separate hidden-score probe rather
-than an automatic deployment promotion. These are local proxy results, not
-hidden-test leaderboard results.
+Small-fragment (1-5 cm3) recall is 33/53 for A0 and 34/53 for A1; large
+fragment recall remains 262/267. A1 improves A0 Dice by 0.002169 and F1 by
+0.001209 with three additional split errors. It does not reach the predeclared
+35/53 small-fragment target, so v3.6 remains an independent hidden-score probe.
 
-# 6. Preprocessing and inference
+# 6. Reproducibility and limitations
 
-Images are canonicalized to LPS and processed through the nnU-Net plans used in
-training. Stage A predicts mutually exclusive anatomy masks. The selected
-anatomy ROI is converted to a CT-only bone-window crop for Stage B. Inference
-runs Stage A and one expert at a time on one GPU, restores the
-prediction to the input geometry and writes one
-`/output/images/peripelvic-fracture-ct-segmentation/*.mha` label map.
+- Stage A, router, ROI policy, Stage-B experts and model archive are frozen.
+- The four decoder modules vendored in the container are the same sources used
+  for the reported ablation; synthetic regression and deployment-contract tests
+  cover the stage order and A1 thresholds.
+- A1 was selected on the reported validation set. Hidden-test generalization
+  and the 10-minute platform runtime must be checked before activation.
+- The stronger Core/Border veto and mutual-best variants were rejected because
+  they lowered local instance F1 and increased split errors.
 
-# 7. Reproducibility and limitations
+# 7. Runtime and licensing
 
-- Fold 0 is used for both stages; no ensemble is deployed.
-- The expert policy and `T=0.75` were evaluated on the reported validation data, so an independent
-  Grand Challenge container/hidden-test check is required before activation.
-- Always-on experts improve overlap/surface proxies but reduce precision and
-  instance F1 and increase fragment splitting.
-- Pelvic cases switch between Sacrum and Hip expert checkpoints serially; the
-  Grand Challenge runtime test must confirm the 10-minute case limit.
-- The official challenge evaluator and hidden test distribution are not local,
-  so the reported metrics are comparative proxies.
-- Exact artifact hashes and source paths are recorded in the release
-  `MODEL_MANIFEST.json`.
+The image targets an NVIDIA T4 16 GiB GPU. Stage A and each Stage-B expert are
+loaded serially. STU-Net-B and nnU-Net are used under their respective
+open-source licenses; Stage-B initialization derives from the official
+TotalSegmentator `base_ep4k` checkpoint.
 
-# 8. Runtime and licensing
-
-The Docker image targets an NVIDIA T4 16 GiB GPU. Stage A and each Stage B expert
-are loaded serially to limit peak memory. STU-Net-B and nnU-Net are used under their
-respective open-source licenses; the Stage-B initialization comes from the
-official TotalSegmentator `base_ep4k` checkpoint.
-
-# 9. References
+# 8. References
 
 - Isensee, F. et al. nnU-Net, *Nature Methods* 18, 203-211 (2021).
 - STU-Net / TotalSegmentator bone pretraining.

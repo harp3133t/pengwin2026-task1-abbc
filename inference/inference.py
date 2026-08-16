@@ -1316,7 +1316,14 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         # channels. Split -> softmax(ABBC[:4]) + sigmoid(affinity[4:]) -> average-linkage
         # agglomeration on the LEARNED affinities. Default OFF -> V302 (4ch) path unchanged.
         _fusion = os.environ.get("PENGWIN_FUSION_DECODE", "0") == "1"
-        if os.environ.get("PENGWIN_AFFINITY_DECODE", "0") == "1" or _fusion:
+        _a1_progressive = (
+            os.environ.get("PENGWIN_A1_PROGRESSIVE_DECODE", "0") == "1"
+        )
+        if (
+            os.environ.get("PENGWIN_AFFINITY_DECODE", "0") == "1"
+            or _fusion
+            or _a1_progressive
+        ):
             import sys as _sys
             # agglo_decode.py is VENDORED next to this file so it ships in the GC container; also add
             # the dev experiments/ dir as a fallback for local runs. (numpy/scipy/skimage only.)
@@ -1327,7 +1334,21 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                     _sys.path.insert(0, _p)
             from agglo_decode import decode_affinity_agglo, decode_fusion
             _abbc = softmax_axis0(ds538_logits_pp[:4])
-            _aff = 1.0 / (1.0 + np.exp(-np.asarray(ds538_logits_pp[4:], dtype=np.float32)))
+            _aff = 1.0 / (
+                1.0
+                + np.exp(
+                    -np.clip(
+                        np.asarray(ds538_logits_pp[4:], dtype=np.float32),
+                        -30.0,
+                        30.0,
+                    )
+                )
+            )
+            if _a1_progressive and int(_aff.shape[0]) != 9:
+                raise RuntimeError(
+                    "PENGWIN_A1_PROGRESSIVE_DECODE requires exactly 9 affinity "
+                    f"channels, got {_aff.shape}"
+                )
             # [13ch raw dump] 4 ABBC softmax + 9 affinity sigmoid -> enables OFFLINE decode/fusion
             # T-sweeps on CPU (no GPU re-run). Split offline as probs13[:4]/probs13[4:].
             _dump_dir = os.environ.get("PENGWIN_DUMP_PROBS", "")
@@ -1339,7 +1360,78 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
             if os.environ.get("PENGWIN_AFF_STATS", "0") == "1":
                 _sh = _aff[:3]  # short-range channels
                 log(f"[aff:{anatomy}] all: mean={float(_aff.mean()):.3f} frac<0.5={float((_aff<0.5).mean()):.4f} | short: mean={float(_sh.mean()):.3f} frac<0.5={float((_sh<0.5).mean()):.4f} min={float(_sh.min()):.3f}")
-            if _fusion:
+            if _a1_progressive:
+                if _fusion:
+                    raise RuntimeError(
+                        "A1 progressive decode and fusion decode are mutually exclusive"
+                    )
+                from multiscale_affinity_rag_decode import (
+                    decode_affinity_multiscale_rag_veto,
+                )
+                from abbc_full_refine_decode import (
+                    refine_instances_with_full_abbc,
+                )
+                from abbc_progressive_affinity_merge_decode import (
+                    apply_progressive_affinity_merge,
+                )
+
+                _initial_pp, _multiscale_report = (
+                    decode_affinity_multiscale_rag_veto(
+                        _abbc,
+                        _aff,
+                        T=float(os.environ.get("PENGWIN_AGGLO_T", "0.75")),
+                        min_vox=250,
+                        min_range_pairs=32,
+                        use_mid=True,
+                        use_long=True,
+                        return_report=True,
+                    )
+                )
+                _aggressive_pp, _abbc_report = refine_instances_with_full_abbc(
+                    _initial_pp,
+                    _abbc,
+                    split_passes=3,
+                    relative_error_threshold=0.10,
+                    absolute_error_threshold=100,
+                    min_split_piece_voxels=400,
+                    split_dilation_radius=3,
+                    max_split_dilations=10,
+                    adjacency_radius=2,
+                    interface_radius=3,
+                    merge_margin=0.05 / 3.0,
+                    return_report=True,
+                )
+                decoded_pp, _a1_report = apply_progressive_affinity_merge(
+                    _aggressive_pp,
+                    _abbc,
+                    _aff,
+                    preprocessed_spacing_zyx=tuple(
+                        float(value) for value in ds538_data_props["spacing"]
+                    ),
+                    small_strict=True,
+                    enable_small_veto=False,
+                    mutual_best_single_round=False,
+                    min_candidate_fragment_mm3=1000.0,
+                    small_fragment_max_mm3=5000.0,
+                    min_boundary_improvement=-0.25,
+                    affinity_connection_threshold=0.55,
+                    large_required_ranges=2,
+                    small_required_ranges=3,
+                    min_pair_observations=8,
+                    adjacency_radius=2,
+                    interface_radius=3,
+                    max_merges=100,
+                    return_report=True,
+                )
+                log(
+                    f"[A1:{anatomy}] multiscale="
+                    f"{_multiscale_report['output_fragments']} "
+                    f"ABBC_split={_abbc_report['accepted_splits']} "
+                    f"ABBC_merge={_abbc_report['accepted_merges']} "
+                    f"A1_merge={_a1_report['accepted']} "
+                    f"output={_a1_report['output_fragments']}"
+                )
+            elif _fusion:
                 # [FUSION] Use the EXACT deployed V302 core-seed watershed as the precise base (incl.
                 # the Sacrum-specific aggressive merge), then sub-split ONLY within a base instance
                 # where the learned affinity confirms a true fracture surface -> recall up, base
