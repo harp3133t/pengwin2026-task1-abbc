@@ -14,6 +14,27 @@
 
 ---
 
+## 🧪 업로드 후보 — v3.6 A1 progressive Affinity-ABBC
+
+> v3.5의 Stage A, hybrid RF 라우터, largest-CC ROI, anatomy expert와 모든
+> 가중치는 고정하고 디코더만 A1으로 변경한 독립 후보이다.
+
+`1/3/9-voxel RAG-veto → full ABBC split/merge → 작은 후보 3/3 Affinity`
+순서로 실행한다. 예측된 작은 쪽이 1–5 cm³이면 세 거리 범위가 모두
+합병에 동의해야 하며, 큰 후보는 2/3 합의를 사용한다.
+
+| Decoder | Dice | HD95 mm ↓ | ASSD mm ↓ | Recall | Precision | F1 | Merge ↓ | Split ↓ | 작은 Recall |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| v3.5 | 0.855649 | 6.686971 | 1.852273 | 0.931412 | **0.932197** | **0.916377** | 21 | **330** | — |
+| A0, Affinity 2/3 | 0.883147 | **3.651583** | **0.901114** | 0.943723 | 0.885290 | 0.896711 | 9 | 409 | 33/53 |
+| **v3.6 A1** | **0.885316** | 3.655591 | 0.901434 | **0.946248** | 0.885417 | 0.897919 | **9** | 412 | **34/53** |
+
+수치는 동일한 frozen 68-case / 132-anatomy official-aligned local proxy이며
+hidden-test 점수가 아니다. v3.6 모델 tarball은 v3.5와 byte-identical하고,
+플랫폼 container test 전에는 기존 image/model pair를 유지한다.
+
+---
+
 ## 🧪 업로드 후보 — v3.5 anatomy experts always-on (`T=0.75`)
 
 > **별도 leaderboard 후보이며 아직 Active가 아니다.** v3.4의 Stage A,

@@ -1,37 +1,35 @@
 ================================================================
 Grand Challenge - "Create Algorithm for Challenge" form fill
-PENGWIN 2026 Task 1 Submission (v3.5 always-expert upload candidate)
+PENGWIN 2026 Task 1 Submission (v3.6 A1 progressive decoder)
 ================================================================
 
 [Title] (single line, method identifier)
 ----------------------------------------------------------------
-Anatomy-Routed ABBC-Affinity STU-Net Cascade (PENGWIN-Auto)
+Anatomy-Routed Progressive Affinity-ABBC STU-Net (PENGWIN-Auto)
 ----------------------------------------------------------------
 
 [Description] (max 1024 chars)
 ----------------------------------------------------------------
-Pelvic and femoral fracture-fragment instance segmentation in CT.
-
-The method is a serial two-stage STU-Net-B cascade. Stage A predicts sacrum,
-left/right hipbone and femur, followed by the validated hybrid pelvic/femur
-router. Stage B always selects the corresponding Sacrum, shared-Hip, or Femur
-expert. Each expert starts from the TotalSegmentator-base V308 checkpoint,
-freezes the encoder, and tunes its decoder and ABBC+9-affinity heads for three
-epochs. Average-linkage agglomeration at T=0.75 converts affinities to instances
-in the official 1-200 ranges. On a 68-patient/132-anatomy proxy, always-expert
-reached IoU-F 0.8168, Dice 0.8556, HD95 6.687 mm, ASSD 1.852 mm and instance F1
-0.9164. It improves overlap/surface metrics but adds 12 split errors, so it is
-an independent leaderboard candidate rather than an automatic replacement.
+Pelvic and femoral fracture-fragment instance segmentation in CT. A serial
+two-stage STU-Net-B cascade first predicts anatomy and uses a validated hybrid
+random-forest router to select pelvic or femur. The routed Sacrum, shared-Hip
+or Femur expert emits four ABBC and nine 1/3/9-voxel affinity channels. The A1
+decoder builds an affinity RAG-veto partition, applies full ABBC split/merge
+refinement, and requires agreement from all three affinity ranges for predicted
+1-5 cm3 merge candidates (two of three for larger candidates). Stage A, router,
+ROI policy, experts and weights are unchanged from v3.5. On a frozen
+68-patient/132-anatomy official-aligned local proxy, A1 reached Dice 0.8853,
+HD95 3.656 mm, ASSD 0.901 mm, recall 0.9462, precision 0.8854 and instance F1
+0.8979. Small-fragment recall was 34/53 and large-fragment recall 262/267.
 ----------------------------------------------------------------
 
 [Job requires gpu type]
 ----------------------------------------------------------------
 NVIDIA T4 Tensor Core GPU (16 GiB VRAM)
 
-Stage A and each expert are loaded and released serially, so peak VRAM is the
-maximum of one network rather than the sum of all experts.
+Stage A and each anatomy expert are loaded and released serially.
 
 ================================================================
-The existing unified model remains the rollback model until v3.5 passes the
-Grand Challenge container test and is deliberately activated.
+The prior image/model pair remains available until v3.6 passes the Grand
+Challenge container test. This candidate is not automatically activated.
 ================================================================
