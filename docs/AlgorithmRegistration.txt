@@ -1,35 +1,38 @@
 ================================================================
 Grand Challenge - "Create Algorithm for Challenge" form fill
-PENGWIN 2026 Task 1 Submission (v3.6 A1 progressive decoder)
+PENGWIN 2026 Task 1 Submission (v3.6.1 split-aware candidate RF)
 ================================================================
 
 [Title] (single line, method identifier)
 ----------------------------------------------------------------
-Anatomy-Routed Progressive Affinity-ABBC STU-Net (PENGWIN-Auto)
+Anatomy-Routed Split-Aware RF STU-Net (PENGWIN-Auto)
 ----------------------------------------------------------------
 
 [Description] (max 1024 chars)
 ----------------------------------------------------------------
 Pelvic and femoral fracture-fragment instance segmentation in CT. A serial
-two-stage STU-Net-B cascade first predicts anatomy and uses a validated hybrid
-random-forest router to select pelvic or femur. The routed Sacrum, shared-Hip
-or Femur expert emits four ABBC and nine 1/3/9-voxel affinity channels. The A1
-decoder builds an affinity RAG-veto partition, applies full ABBC split/merge
-refinement, and requires agreement from all three affinity ranges for predicted
-1-5 cm3 merge candidates (two of three for larger candidates). Stage A, router,
-ROI policy, experts and weights are unchanged from v3.5. On a frozen
-68-patient/132-anatomy official-aligned local proxy, A1 reached Dice 0.8853,
-HD95 3.656 mm, ASSD 0.901 mm, recall 0.9462, precision 0.8854 and instance F1
-0.8979. Small-fragment recall was 34/53 and large-fragment recall 262/267.
+two-stage STU-Net-B cascade predicts anatomy, routes pelvic/femur cases with a
+validated hybrid random forest, and applies a Sacrum, shared-Hip, or Femur
+expert producing four ABBC and nine 1/3/9-voxel affinity channels. The exact
+v3.5 one-voxel partition remains the safe base. A parallel 1/3/9 RAG-veto plus
+full-ABBC path proposes local binary splits. Five candidate-outcome RF
+regressors use 44 inference-only features to predict changes in Merge, Split,
+Dice, F1, and Precision; only candidates passing a conservative split-cost
+policy are applied. Foreground support is unchanged. Neural weights and the
+family router remain v3.5; the new model archive adds the RF bundle. Nested
+case-grouped OOF on 68 patients/132 anatomies changed Dice 0.8556 to 0.8561,
+HD95 6.687 to 6.440 mm, ASSD 1.852 to 1.789 mm, Merge 21 to 20, and Split 330
+to 334. These are local proxy values, not hidden-test scores.
 ----------------------------------------------------------------
 
 [Job requires gpu type]
 ----------------------------------------------------------------
 NVIDIA T4 Tensor Core GPU (16 GiB VRAM)
 
-Stage A and each anatomy expert are loaded and released serially.
+Stage A and each anatomy expert are loaded and released serially. The RF runs
+on CPU after Stage B.
 
 ================================================================
-The prior image/model pair remains available until v3.6 passes the Grand
-Challenge container test. This candidate is not automatically activated.
+The existing v3.7 tag/release is untouched. The prior image/model pair remains
+available until v3.6.1 passes the Grand Challenge container test.
 ================================================================

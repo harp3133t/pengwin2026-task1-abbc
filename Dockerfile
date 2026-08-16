@@ -76,7 +76,7 @@ ENV PENGWIN_ROOT=/opt/ml/model \
     MPLCONFIGDIR=/tmp/matplotlib \
     XDG_CACHE_HOME=/tmp/.cache
 
-# [v3.6 candidate = v3.5 weights + A1 progressive affinity/ABBC decode]
+# [v3.6.1 candidate = v3.5 safe base + split-aware candidate RF]
 # Stage-A and the hybrid family router stay fixed. Every routed Stage-B anatomy
 # uses its epoch-3 specialist (Sacrum, shared Left/Right Hip, or Femur), all
 # initialized from the v3.4 TotalSegmentator-base V308 checkpoint. The unified
@@ -90,7 +90,9 @@ ENV PENGWIN_DS539_TRAINER=PengwinTrainerSTUNetBaseAnatomyV301 \
     PENGWIN_DS538_FOLD=0 \
     PENGWIN_DS538_OUT_CH=13 \
     PENGWIN_AFFINITY_DECODE=1 \
-    PENGWIN_A1_PROGRESSIVE_DECODE=1 \
+    PENGWIN_A1_PROGRESSIVE_DECODE=0 \
+    PENGWIN_SPLIT_AWARE_RF_DECODE=1 \
+    PENGWIN_SPLIT_AWARE_RF_PATH=/opt/ml/model/split_candidate_rf/v35_candidate_split_aware_rf_all_candidates.joblib \
     PENGWIN_AGGLO_T=0.75 \
     PENGWIN_FUSION_DECODE=0 \
     PENGWIN_STAGEA_BONE_RECONCILE=0 \
