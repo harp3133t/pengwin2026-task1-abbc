@@ -14,24 +14,27 @@
 
 ---
 
-## 🧪 업로드 후보 — v3.6 A1 progressive Affinity-ABBC
+## 🧪 업로드 후보 — v3.6.1 split-aware candidate RF
 
-> v3.5의 Stage A, hybrid RF 라우터, largest-CC ROI, anatomy expert와 모든
-> 가중치는 고정하고 디코더만 A1으로 변경한 독립 후보이다.
+> 기존 `v3.7` 릴리스는 변경하지 않는다. v3.6.1은 v3.5의 Stage A,
+> hybrid family RF 라우터, largest-CC ROI, anatomy expert와 신경망 가중치를
+> 그대로 두고, Stage B 뒤에 별도의 split-candidate RF 안전 게이트를 추가한다.
 
-`1/3/9-voxel RAG-veto → full ABBC split/merge → 작은 후보 3/3 Affinity`
-순서로 실행한다. 예측된 작은 쪽이 1–5 cm³이면 세 거리 범위가 모두
-합병에 동의해야 하며, 큰 후보는 2/3 합의를 사용한다.
+v3.5의 1-voxel affinity 결과를 안전한 기본값으로 유지한다. 동시에
+`1/3/9-voxel RAG-veto → full ABBC`로 분할 후보를 만든 뒤, 후보마다 추론
+시점에 알 수 있는 44개 특징으로 Merge/Split/Dice/F1/Precision 변화를
+예측한다. 학습된 보수 정책을 통과한 후보만 기본 인스턴스 하나를 둘로
+나누며 foreground support는 바꾸지 않는다.
 
-| Decoder | Dice | HD95 mm ↓ | ASSD mm ↓ | Recall | Precision | F1 | Merge ↓ | Split ↓ | 작은 Recall |
+| Decoder | Dice | HD95 mm ↓ | ASSD mm ↓ | Recall | Precision | F1 | Merge ↓ | Split ↓ | Topology |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| v3.5 | 0.855649 | 6.686971 | 1.852273 | 0.931412 | **0.932197** | **0.916377** | 21 | **330** | — |
-| A0, Affinity 2/3 | 0.883147 | **3.651583** | **0.901114** | 0.943723 | 0.885290 | 0.896711 | 9 | 409 | 33/53 |
-| **v3.6 A1** | **0.885316** | 3.655591 | 0.901434 | **0.946248** | 0.885417 | 0.897919 | **9** | 412 | **34/53** |
+| v3.5 | 0.855649 | 6.686971 | 1.852273 | 0.931412 | **0.932197** | **0.916377** | 21 | **330** | **0.307585** |
+| **v3.6.1 split-aware RF OOF** | **0.856133** | **6.439807** | **1.789200** | 0.931412 | 0.928409 | 0.913852 | **20** | 334 | 0.300009 |
 
-수치는 동일한 frozen 68-case / 132-anatomy official-aligned local proxy이며
-hidden-test 점수가 아니다. v3.6 모델 tarball은 v3.5와 byte-identical하고,
-플랫폼 container test 전에는 기존 image/model pair를 유지한다.
+위 수치는 68-case / 132-anatomy nested case-group OOF official-aligned local
+proxy이며 hidden-test 점수가 아니다. 112개 후보 중 OOF에서 2개만 적용되어
+Merge가 21→20으로 줄고 Split 증가는 +4로 억제됐다. 제출 모델 archive에는
+기존 v3.5 신경망·라우터와 함께 5개 RF regressor bundle을 새로 포함한다.
 
 ---
 

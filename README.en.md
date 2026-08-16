@@ -16,26 +16,29 @@ cascade** on a **STU-Net-B** backbone, I/O-compatible with the official
 
 ---
 
-## Upload candidate — v3.6 A1 progressive Affinity-ABBC
+## Upload candidate — v3.6.1 split-aware candidate RF
 
-This candidate freezes the v3.5 Stage A, hybrid RF router, largest-component
-ROI policy, anatomy experts and every model weight. It changes only the
-deterministic decoder:
+The existing `v3.7` release is intentionally untouched. v3.6.1 freezes the
+v3.5 Stage A, hybrid family RF router, largest-component ROI policy, anatomy
+experts, and every neural-network weight. It adds a separate split-candidate
+RF safety gate after Stage B.
 
-`1/3/9-voxel RAG veto → full ABBC split/merge → A1 small-candidate 3/3 affinity`.
+The one-voxel v3.5 affinity partition remains the safe default. A parallel
+`1/3/9-voxel RAG veto → full ABBC` path proposes local binary splits. Five RF
+regressors estimate each candidate's change in Merge, Split, Dice, F1, and
+Precision from 44 inference-only features. Only candidates passing the learned
+conservative policy split a base instance; foreground support is invariant.
 
-Predicted merge candidates whose smaller side is 1–5 cm³ require agreement
-from all three affinity ranges; larger candidates require two of three.
-
-| Decoder | Dice | HD95 mm ↓ | ASSD mm ↓ | Recall | Precision | F1 | Merge ↓ | Split ↓ | Small recall |
+| Decoder | Dice | HD95 mm ↓ | ASSD mm ↓ | Recall | Precision | F1 | Merge ↓ | Split ↓ | Topology |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| v3.5 | 0.855649 | 6.686971 | 1.852273 | 0.931412 | **0.932197** | **0.916377** | 21 | **330** | — |
-| A0, affinity 2/3 | 0.883147 | **3.651583** | **0.901114** | 0.943723 | 0.885290 | 0.896711 | 9 | 409 | 33/53 |
-| **v3.6 A1** | **0.885316** | 3.655591 | 0.901434 | **0.946248** | 0.885417 | 0.897919 | **9** | 412 | **34/53** |
+| v3.5 | 0.855649 | 6.686971 | 1.852273 | 0.931412 | **0.932197** | **0.916377** | 21 | **330** | **0.307585** |
+| **v3.6.1 split-aware RF OOF** | **0.856133** | **6.439807** | **1.789200** | 0.931412 | 0.928409 | 0.913852 | **20** | 334 | 0.300009 |
 
-These are frozen 68-case / 132-anatomy official-aligned local proxy results,
-not hidden-test scores. The v3.6 model archive is byte-identical to v3.5; keep
-the previous image/model pair available until the platform container test.
+These are nested case-grouped OOF results on the frozen 68-case / 132-anatomy
+official-aligned local proxy, not hidden-test scores. Two of 112 OOF candidates
+were applied: Merge fell from 21 to 20 while the Split increase was limited to
+four. The new model archive packages the five RF regressors alongside the
+unchanged v3.5 neural weights and family router.
 
 ---
 
@@ -399,9 +402,9 @@ github_repo/
 
 ```bash
 git push harp3133t main
-git tag -a v3.6 -m "v3.6 A1 progressive Affinity-ABBC"
-git push harp3133t v3.6
-# Grand Challenge → Container Images: wait for the v3.6 build to finish.
+git tag -a v3.6.1 -m "v3.6.1 split-aware candidate RF"
+git push harp3133t v3.6.1
+# Grand Challenge → Container Images: wait for the v3.6.1 build to finish.
 # Upload model.tar.gz to the algorithm's Models tab and associate it with the image.
 # Run the platform container test before manually making either artifact Active.
 # Submit: paste docs/Comment.txt, upload docs/description.pdf, select Algorithm, Submit
@@ -410,8 +413,9 @@ git push harp3133t v3.6
 Daily quota: 10 submissions/day, 10-minute per-case timeout. The deployed Stage-B
 trainer, decoder, and router are selected by Dockerfile `ENV` (for example
 `PENGWIN_DS538_TRAINER`, `PENGWIN_AFFINITY_DECODE`, and `PENGWIN_TARGET_ROUTER`).
-With `PENGWIN_TARGET_ROUTER=1`, the router joblib must be present in the model
-payload or inference fails fast.
+With `PENGWIN_TARGET_ROUTER=1` and `PENGWIN_SPLIT_AWARE_RF_DECODE=1`, both the
+family-router and candidate-outcome RF joblib artifacts must be present in the
+model payload or inference fails fast.
 
 ---
 

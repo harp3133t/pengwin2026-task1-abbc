@@ -149,6 +149,23 @@ TARGET_ROUTER_PATH = Path(
 )
 _TARGET_ROUTER_PAYLOAD = None
 
+# --- v3.6.1 split-candidate outcome gate. ---
+# The artifact is part of model.tar.gz because it contains five fitted RF
+# regressors. Missing artifacts fail fast when the deployment flag is enabled.
+SPLIT_AWARE_RF_ENABLED = (
+    os.environ.get("PENGWIN_SPLIT_AWARE_RF_DECODE", "0") == "1"
+)
+SPLIT_AWARE_RF_PATH = Path(
+    os.environ.get(
+        "PENGWIN_SPLIT_AWARE_RF_PATH",
+        str(
+            MODEL_ROOT
+            / "split_candidate_rf"
+            / "v35_candidate_split_aware_rf_all_candidates.joblib"
+        ),
+    )
+)
+
 # --- anatomy routing: process every anatomy whose Ds539 argmax mask is a substantial
 #     fraction of the largest present mask (see route_from_ds539_masks). ---
 ROI_PAD_VOX = 24
@@ -1051,10 +1068,11 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
     img_lps, arr_clipped = canonicalize_and_clip_image(ref_img)
     image_npy_lps = arr_clipped.astype(np.float32, copy=False)
     ct_lut_full = bone_lut_normalize(arr_clipped)
+    raw_ct_lps = sitk.GetArrayFromImage(img_lps).astype(np.float32, copy=False)
     # DIAG: raw (pre-clip) HU stats — detects an OOD / mis-calibrated GC input (e.g. uint16
     # raw pixels needing rescale, or a non-HU intensity range) that would make Ds539 garbage.
     try:
-        _raw = sitk.GetArrayFromImage(img_lps)
+        _raw = raw_ct_lps
         log(f"DIAG raw-HU: dtype={_raw.dtype} min={float(_raw.min()):.0f} max={float(_raw.max()):.0f} "
             f"mean={float(_raw.mean()):.0f} p1={float(np.percentile(_raw,1)):.0f} "
             f"p99={float(np.percentile(_raw,99)):.0f} bone(>200)={float((_raw>200).mean()):.4f} "
@@ -1222,6 +1240,10 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
     active_ds538_trainer = None
 
     full_label = np.zeros(img_shape, dtype=np.uint16)
+    proposal_full = (
+        np.zeros(img_shape, dtype=np.uint16) if SPLIT_AWARE_RF_ENABLED else None
+    )
+    split_decoder_contexts: dict[str, dict] = {}
     for anatomy in anatomies:
         elapsed = time.time() - t_start
         if V03_USE_TIME_BUDGET and elapsed >= TIME_BUDGET_HARD_LIMIT:
@@ -1315,14 +1337,17 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         # [TIER-1 experiment, env-gated] V307 affinity head: Ds538 output is 4 ABBC + K affinity
         # channels. Split -> softmax(ABBC[:4]) + sigmoid(affinity[4:]) -> average-linkage
         # agglomeration on the LEARNED affinities. Default OFF -> V302 (4ch) path unchanged.
+        _proposal_pp = None
         _fusion = os.environ.get("PENGWIN_FUSION_DECODE", "0") == "1"
         _a1_progressive = (
             os.environ.get("PENGWIN_A1_PROGRESSIVE_DECODE", "0") == "1"
         )
+        _split_aware_rf = SPLIT_AWARE_RF_ENABLED
         if (
             os.environ.get("PENGWIN_AFFINITY_DECODE", "0") == "1"
             or _fusion
             or _a1_progressive
+            or _split_aware_rf
         ):
             import sys as _sys
             # agglo_decode.py is VENDORED next to this file so it ships in the GC container; also add
@@ -1344,9 +1369,9 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                     )
                 )
             )
-            if _a1_progressive and int(_aff.shape[0]) != 9:
+            if (_a1_progressive or _split_aware_rf) and int(_aff.shape[0]) != 9:
                 raise RuntimeError(
-                    "PENGWIN_A1_PROGRESSIVE_DECODE requires exactly 9 affinity "
+                    "progressive/split-aware decode requires exactly 9 affinity "
                     f"channels, got {_aff.shape}"
                 )
             # [13ch raw dump] 4 ABBC softmax + 9 affinity sigmoid -> enables OFFLINE decode/fusion
@@ -1360,7 +1385,64 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
             if os.environ.get("PENGWIN_AFF_STATS", "0") == "1":
                 _sh = _aff[:3]  # short-range channels
                 log(f"[aff:{anatomy}] all: mean={float(_aff.mean()):.3f} frac<0.5={float((_aff<0.5).mean()):.4f} | short: mean={float(_sh.mean()):.3f} frac<0.5={float((_sh<0.5).mean()):.4f} min={float(_sh.min()):.3f}")
-            if _a1_progressive:
+            if _split_aware_rf:
+                if _fusion or _a1_progressive:
+                    raise RuntimeError(
+                        "split-aware RF, A1 progressive, and fusion decoders are "
+                        "mutually exclusive"
+                    )
+                from multiscale_affinity_rag_decode import (
+                    decode_affinity_multiscale_rag_veto,
+                )
+                from abbc_full_refine_decode import (
+                    refine_instances_with_full_abbc,
+                )
+
+                # Safe base: exact v3.5 one-voxel affinity decoder.
+                decoded_pp = decode_affinity_agglo(
+                    _abbc,
+                    _aff,
+                    T=float(os.environ.get("PENGWIN_AGGLO_T", "0.75")),
+                )
+                # Proposal only: all 1/3/9 ranges followed by full ABBC heal.
+                _initial_pp, _multiscale_report = (
+                    decode_affinity_multiscale_rag_veto(
+                        _abbc,
+                        _aff,
+                        T=float(os.environ.get("PENGWIN_AGGLO_T", "0.75")),
+                        min_vox=250,
+                        min_range_pairs=32,
+                        use_mid=True,
+                        use_long=True,
+                        return_report=True,
+                    )
+                )
+                _proposal_pp, _abbc_report = refine_instances_with_full_abbc(
+                    _initial_pp,
+                    _abbc,
+                    split_passes=3,
+                    relative_error_threshold=0.10,
+                    absolute_error_threshold=100,
+                    min_split_piece_voxels=400,
+                    split_dilation_radius=3,
+                    max_split_dilations=10,
+                    adjacency_radius=2,
+                    interface_radius=3,
+                    merge_margin=0.05 / 3.0,
+                    return_report=True,
+                )
+                split_decoder_contexts[anatomy] = {
+                    "multiscale": _multiscale_report,
+                    "abbc": _abbc_report,
+                }
+                log(
+                    f"[v3.6.1-RF:{anatomy}] base="
+                    f"{int(np.max(decoded_pp, initial=0))} proposal="
+                    f"{_abbc_report['output_fragments']} "
+                    f"ABBC_split={_abbc_report['accepted_splits']} "
+                    f"ABBC_merge={_abbc_report['accepted_merges']}"
+                )
+            elif _a1_progressive:
                 if _fusion:
                     raise RuntimeError(
                         "A1 progressive decode and fusion decode are mutually exclusive"
@@ -1467,6 +1549,13 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
             else:
                 decoded_pp = decode_abbc_core_seed_watershed(ds538_probs)
         decoded_crop = resample_label_map_to_original(decoded_pp, ds538_data_props, ds538_predictor)
+        proposal_crop = (
+            resample_label_map_to_original(
+                _proposal_pp, ds538_data_props, ds538_predictor
+            )
+            if _proposal_pp is not None
+            else None
+        )
 
         # 라벨 재매핑 후 전체 볼륨에 paste
         # PENGWIN 스펙: Sacrum [1..50], LeftHip [51..100], RightHip [101..150], Femur [151..200]
@@ -1511,6 +1600,86 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         out_slot[write_mask] = remapped_crop[write_mask]
         full_label[bbox] = out_slot
         log(f"[{anatomy}] painted {int(write_mask.sum())} voxels, {len(local_ids)} fragments in range [{lo},{hi}]")
+
+        if proposal_crop is not None:
+            if proposal_full is None:
+                raise RuntimeError("split-aware proposal canvas is unavailable")
+            proposal_ids = sorted(
+                int(value) for value in np.unique(proposal_crop) if int(value) > 0
+            )
+            if len(proposal_ids) > n_slots:
+                proposal_sizes = [
+                    (value, int((proposal_crop == value).sum()))
+                    for value in proposal_ids
+                ]
+                proposal_sizes.sort(key=lambda item: -item[1])
+                proposal_ids = [item[0] for item in proposal_sizes[:n_slots]]
+            if proposal_ids:
+                proposal_remap = np.zeros(max(proposal_ids) + 1, dtype=np.uint16)
+                for index, old_id in enumerate(proposal_ids):
+                    proposal_remap[old_id] = np.uint16(lo + index)
+                proposal_filtered = np.where(
+                    np.isin(proposal_crop, proposal_ids), proposal_crop, 0
+                ).astype(np.int32, copy=False)
+                proposal_filtered = np.clip(
+                    proposal_filtered, 0, max(proposal_ids)
+                )
+                proposal_remapped = proposal_remap[proposal_filtered]
+                proposal_slot = proposal_full[bbox]
+                proposal_write = (proposal_remapped > 0) & (proposal_slot == 0)
+                if os.environ.get("PENGWIN_CONFINE_TO_MASK", "1") == "1":
+                    if ob.shape == proposal_write.shape:
+                        proposal_write &= ~ob
+                proposal_slot[proposal_write] = proposal_remapped[proposal_write]
+                proposal_full[bbox] = proposal_slot
+                log(
+                    f"[v3.6.1-RF:{anatomy}] proposal painted "
+                    f"{int(proposal_write.sum())} voxels, "
+                    f"{len(proposal_ids)} fragments"
+                )
+
+    if SPLIT_AWARE_RF_ENABLED:
+        if proposal_full is None:
+            raise RuntimeError("split-aware RF enabled without proposal canvas")
+        if ds538_predictor is not None:
+            del ds538_predictor
+            ds538_predictor = None
+            active_ds538_trainer = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        from split_candidate_rf_gate import (
+            load_split_gate,
+            run_split_candidate_rf_gate,
+        )
+
+        split_payload = load_split_gate(SPLIT_AWARE_RF_PATH)
+        full_label, split_report = run_split_candidate_rf_gate(
+            full_label,
+            proposal_full,
+            raw_ct_lps,
+            spacing_zyx,
+            split_decoder_contexts,
+            split_payload,
+        )
+        log(
+            "[v3.6.1-RF] candidates="
+            f"{split_report['candidate_count']} eligible="
+            f"{split_report['eligible_count']} selected="
+            f"{split_report['selected_count']} applied="
+            f"{split_report['applied_count']} support_identical="
+            f"{split_report['foreground_support_identical']}"
+        )
+        for detail in split_report["applied"]:
+            log(
+                "[v3.6.1-RF] applied "
+                f"{detail['anatomy']} source={detail['source_id']} "
+                f"proposal={detail['proposal_id']} new={detail['new_id']} "
+                f"pred_merge={detail['predicted_delta_merge']:.3f} "
+                f"pred_split={detail['predicted_delta_split']:.3f}"
+            )
+        del proposal_full, split_payload
+        gc.collect()
 
     # === Step 5: 원본이 LPS 가 아니었다면 원래 방향으로 되돌린다 ===
     # nnUNet 은 LPS 로 추론하므로, 원본 orientation 으로 복구해야
