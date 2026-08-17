@@ -14,27 +14,27 @@
 
 ---
 
-## 🧪 업로드 후보 — v3.6.1 split-aware candidate RF
+## 🧪 업로드 후보 — v3.6.2 Guarded seed recovery
 
-> 기존 `v3.7` 릴리스는 변경하지 않는다. v3.6.1은 v3.5의 Stage A,
-> hybrid family RF 라우터, largest-CC ROI, anatomy expert와 신경망 가중치를
-> 그대로 두고, Stage B 뒤에 별도의 split-candidate RF 안전 게이트를 추가한다.
+> v3.6.2는 v3.5의 Stage A, hybrid family RF 라우터, largest-CC ROI,
+> anatomy expert와 모든 신경망 가중치를 그대로 사용한다. Stage1 fill과
+> v3.6.1 split-candidate RF는 끄고, 검증된 Guarded seed 디코더만 적용한다.
 
-v3.5의 1-voxel affinity 결과를 안전한 기본값으로 유지한다. 동시에
-`1/3/9-voxel RAG-veto → full ABBC`로 분할 후보를 만든 뒤, 후보마다 추론
-시점에 알 수 있는 44개 특징으로 Merge/Split/Dice/F1/Precision 변화를
-예측한다. 학습된 보수 정책을 통과한 후보만 기본 인스턴스 하나를 둘로
-나누며 foreground support는 바꾸지 않는다.
+먼저 v3.5의 1-voxel affinity 결과를 만든다. 그 안에서 ABBC Boundary가
+제안한 이진 분할은 양쪽에 Core가 50 voxel 이상 존재하고 1·3·9 voxel
+Affinity 세 거리 범위가 모두 분리에 동의할 때만 적용한다. 각 결과 조각은
+1,000 mm³ 이상이어야 하며, 후속 hard merge는 완전히 비활성화한다.
+따라서 합의가 없는 인스턴스와 foreground support는 v3.5 그대로 유지된다.
 
 | Decoder | Dice | HD95 mm ↓ | ASSD mm ↓ | Recall | Precision | F1 | Merge ↓ | Split ↓ | Topology |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| v3.5 | 0.855649 | 6.686971 | 1.852273 | 0.931412 | **0.932197** | **0.916377** | 21 | **330** | **0.307585** |
-| **v3.6.1 split-aware RF OOF** | **0.856133** | **6.439807** | **1.789200** | 0.931412 | 0.928409 | 0.913852 | **20** | 334 | 0.300009 |
+| v3.5 | 0.855651 | 6.687490 | 1.852238 | 0.931412 | **0.932197** | 0.916377 | 21 | **330** | **0.307585** |
+| **v3.6.2 Guarded seed** | **0.862738** | **6.358605** | **1.765682** | **0.937725** | 0.930934 | **0.920165** | **20** | 337 | 0.301272 |
 
-위 수치는 68-case / 132-anatomy nested case-group OOF official-aligned local
-proxy이며 hidden-test 점수가 아니다. 112개 후보 중 OOF에서 2개만 적용되어
-Merge가 21→20으로 줄고 Split 증가는 +4로 억제됐다. 제출 모델 archive에는
-기존 v3.5 신경망·라우터와 함께 5개 RF regressor bundle을 새로 포함한다.
+위 수치는 동일한 frozen 68-case / 132-anatomy official-aligned local proxy이며
+hidden-test 점수가 아니다. v3.5 대비 Dice, 표면 거리, Recall, F1과 Merge가
+함께 좋아졌고 작은 골편 1–5 cm³ recall은 32/53으로 유지됐다. 모델 archive는
+v3.5와 byte-identical하며 새 학습 모델이나 RF artifact가 필요하지 않다.
 
 ---
 
