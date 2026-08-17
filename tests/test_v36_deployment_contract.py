@@ -1,4 +1,4 @@
-"""Static neural-weight and decoder prerequisites for v3.6.2."""
+"""Static neural-weight and decoder prerequisites for v3.6.3."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ def test_dockerfile_selects_the_evaluated_candidate():
     assert "PENGWIN_A1_PROGRESSIVE_DECODE=0" in dockerfile
     assert "PENGWIN_SPLIT_AWARE_RF_DECODE=0" in dockerfile
     assert "PENGWIN_GUARDED_SEED_DECODE=1" in dockerfile
+    assert "PENGWIN_STAGE1_INSTANCE_FILL=1" in dockerfile
     assert "PENGWIN_AGGLO_T=0.75" in dockerfile
     assert "PENGWIN_TARGET_ROUTER=1" in dockerfile
     assert "PENGWIN_RF_CONF_MARGIN=0.15" in dockerfile

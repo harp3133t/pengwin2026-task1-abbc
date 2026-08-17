@@ -176,6 +176,13 @@ GUARDED_SEED_ENABLED = (
     os.environ.get("PENGWIN_GUARDED_SEED_DECODE", "0") == "1"
 )
 
+# --- v3.6.3 final Stage-1 instance support fill. ---
+# After all decoder actions, assign only currently empty Stage-1 anatomy voxels
+# to an existing instance through 26-connected nearest-marker watershed.
+STAGE1_INSTANCE_FILL_ENABLED = (
+    os.environ.get("PENGWIN_STAGE1_INSTANCE_FILL", "0") == "1"
+)
+
 # --- anatomy routing: process every anatomy whose Ds539 argmax mask is a substantial
 #     fraction of the largest present mask (see route_from_ds539_masks). ---
 ROI_PAD_VOX = 24
@@ -1254,6 +1261,7 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         np.zeros(img_shape, dtype=np.uint16) if SPLIT_AWARE_RF_ENABLED else None
     )
     split_decoder_contexts: dict[str, dict] = {}
+    stage1_fill_masks: dict[str, np.ndarray] = {}
     for anatomy in anatomies:
         elapsed = time.time() - t_start
         if V03_USE_TIME_BUDGET and elapsed >= TIME_BUDGET_HARD_LIMIT:
@@ -1286,6 +1294,10 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                     keep_idx = int(np.argmax(sizes)) + 1
                     mask = (cc_labels == keep_idx)
         # 'union' leaves the multi-CC mask untouched so bbox_from_mask spans every fragment.
+        if STAGE1_INSTANCE_FILL_ENABLED:
+            # Keep the exact post-CC Stage-1 mask used to localize this anatomy.
+            # The reference is sufficient; downstream code does not mutate it.
+            stage1_fill_masks[anatomy] = np.asarray(mask, dtype=bool)
 
         bbox = bbox_from_mask(mask, pad_vox=ROI_PAD_VOX)
         if bbox is None:
@@ -1751,6 +1763,47 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
             )
         del proposal_full, split_payload
         gc.collect()
+
+    if STAGE1_INSTANCE_FILL_ENABLED:
+        from stage1_instance_reconcile import fill_anatomy_support
+
+        total_filled = 0
+        total_unseeded = 0
+        for anatomy in anatomies:
+            stage1_mask = stage1_fill_masks.get(anatomy)
+            if stage1_mask is None:
+                continue
+            before_instances = int(
+                np.unique(
+                    full_label[
+                        (full_label >= ANATOMY_RANGES[anatomy][0])
+                        & (full_label <= ANATOMY_RANGES[anatomy][1])
+                    ]
+                ).size
+            )
+            full_label, fill_report = fill_anatomy_support(
+                full_label,
+                stage1_mask,
+                ANATOMY_RANGES[anatomy],
+            )
+            if int(fill_report["output_instances"]) != before_instances:
+                raise RuntimeError(
+                    f"Stage-1 fill changed {anatomy} instance count: "
+                    f"{before_instances} -> {fill_report['output_instances']}"
+                )
+            total_filled += int(fill_report["filled_voxels"])
+            total_unseeded += int(fill_report["unseeded_stage1_voxels"])
+            log(
+                f"[v3.6.3-stage1-fill:{anatomy}] instances="
+                f"{before_instances} filled={fill_report['filled_voxels']} "
+                f"missing_before={fill_report['stage1_missing_before']} "
+                f"missing_after={fill_report['stage1_missing_after']}"
+            )
+        log(
+            f"[v3.6.3-stage1-fill] total_filled={total_filled} "
+            f"unseeded={total_unseeded}"
+        )
+        del stage1_fill_masks
 
     # === Step 5: 원본이 LPS 가 아니었다면 원래 방향으로 되돌린다 ===
     # nnUNet 은 LPS 로 추론하므로, 원본 orientation 으로 복구해야
