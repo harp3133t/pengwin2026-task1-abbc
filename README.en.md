@@ -16,29 +16,28 @@ cascade** on a **STU-Net-B** backbone, I/O-compatible with the official
 
 ---
 
-## Upload candidate — v3.6.1 split-aware candidate RF
+## Upload candidate — v3.6.2 guarded-seed recovery
 
-The existing `v3.7` release is intentionally untouched. v3.6.1 freezes the
-v3.5 Stage A, hybrid family RF router, largest-component ROI policy, anatomy
-experts, and every neural-network weight. It adds a separate split-candidate
-RF safety gate after Stage B.
+v3.6.2 freezes the v3.5 Stage A, hybrid family RF router, largest-component
+ROI policy, anatomy experts, and every neural-network weight. Stage-1 fill and
+the v3.6.1 split-candidate RF are disabled; only the validated guarded-seed
+decoder is enabled.
 
-The one-voxel v3.5 affinity partition remains the safe default. A parallel
-`1/3/9-voxel RAG veto → full ABBC` path proposes local binary splits. Five RF
-regressors estimate each candidate's change in Merge, Split, Dice, F1, and
-Precision from 44 inference-only features. Only candidates passing the learned
-conservative policy split a base instance; foreground support is invariant.
+The exact v3.5 one-voxel affinity partition is the safe base. Inside each base
+instance, an ABBC Boundary proposal is accepted only when both pieces have at
+least 50 Core voxels, all three 1/3/9-voxel affinity ranges support separation,
+and both final pieces are at least 1,000 mm3. Post-split hard merging is fully
+disabled, so unsupported instances and foreground support remain v3.5.
 
 | Decoder | Dice | HD95 mm ↓ | ASSD mm ↓ | Recall | Precision | F1 | Merge ↓ | Split ↓ | Topology |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| v3.5 | 0.855649 | 6.686971 | 1.852273 | 0.931412 | **0.932197** | **0.916377** | 21 | **330** | **0.307585** |
-| **v3.6.1 split-aware RF OOF** | **0.856133** | **6.439807** | **1.789200** | 0.931412 | 0.928409 | 0.913852 | **20** | 334 | 0.300009 |
+| v3.5 | 0.855651 | 6.687490 | 1.852238 | 0.931412 | **0.932197** | 0.916377 | 21 | **330** | **0.307585** |
+| **v3.6.2 guarded seed** | **0.862738** | **6.358605** | **1.765682** | **0.937725** | 0.930934 | **0.920165** | **20** | 337 | 0.301272 |
 
-These are nested case-grouped OOF results on the frozen 68-case / 132-anatomy
-official-aligned local proxy, not hidden-test scores. Two of 112 OOF candidates
-were applied: Merge fell from 21 to 20 while the Split increase was limited to
-four. The new model archive packages the five RF regressors alongside the
-unchanged v3.5 neural weights and family router.
+These are results on the frozen 68-case / 132-anatomy official-aligned local
+proxy, not hidden-test scores. Dice, surface distance, Recall, F1, and Merge
+all improve over v3.5, while 1–5 cm3 fragment recall stays at 32/53. The model
+archive is byte-identical to v3.5; no new trained model or RF artifact is needed.
 
 ---
 
@@ -402,9 +401,9 @@ github_repo/
 
 ```bash
 git push harp3133t main
-git tag -a v3.6.1 -m "v3.6.1 split-aware candidate RF"
-git push harp3133t v3.6.1
-# Grand Challenge → Container Images: wait for the v3.6.1 build to finish.
+git tag -a v3.6.2 -m "v3.6.2 guarded-seed recovery"
+git push harp3133t v3.6.2
+# Grand Challenge → Container Images: wait for the v3.6.2 build to finish.
 # Upload model.tar.gz to the algorithm's Models tab and associate it with the image.
 # Run the platform container test before manually making either artifact Active.
 # Submit: paste docs/Comment.txt, upload docs/description.pdf, select Algorithm, Submit
@@ -413,9 +412,8 @@ git push harp3133t v3.6.1
 Daily quota: 10 submissions/day, 10-minute per-case timeout. The deployed Stage-B
 trainer, decoder, and router are selected by Dockerfile `ENV` (for example
 `PENGWIN_DS538_TRAINER`, `PENGWIN_AFFINITY_DECODE`, and `PENGWIN_TARGET_ROUTER`).
-With `PENGWIN_TARGET_ROUTER=1` and `PENGWIN_SPLIT_AWARE_RF_DECODE=1`, both the
-family-router and candidate-outcome RF joblib artifacts must be present in the
-model payload or inference fails fast.
+With `PENGWIN_TARGET_ROUTER=1`, the family-router joblib must be present in the
+model payload or inference fails fast. v3.6.2 adds no candidate-outcome RF.
 
 ---
 

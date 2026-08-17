@@ -166,6 +166,16 @@ SPLIT_AWARE_RF_PATH = Path(
     )
 )
 
+# --- v3.6.2 guarded-seed decoder. ---
+# Start from the exact v3.5 one-voxel affinity partition and accept only ABBC
+# binary splits that have Core support on both sides and separating evidence
+# from every learned affinity range (1, 3, and 9 voxels).  The refinement's
+# hard-merge stage is disabled so an unsupported proposal is byte-identical to
+# the v3.5 instance partition.
+GUARDED_SEED_ENABLED = (
+    os.environ.get("PENGWIN_GUARDED_SEED_DECODE", "0") == "1"
+)
+
 # --- anatomy routing: process every anatomy whose Ds539 argmax mask is a substantial
 #     fraction of the largest present mask (see route_from_ds539_masks). ---
 ROI_PAD_VOX = 24
@@ -1343,11 +1353,13 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
             os.environ.get("PENGWIN_A1_PROGRESSIVE_DECODE", "0") == "1"
         )
         _split_aware_rf = SPLIT_AWARE_RF_ENABLED
+        _guarded_seed = GUARDED_SEED_ENABLED
         if (
             os.environ.get("PENGWIN_AFFINITY_DECODE", "0") == "1"
             or _fusion
             or _a1_progressive
             or _split_aware_rf
+            or _guarded_seed
         ):
             import sys as _sys
             # agglo_decode.py is VENDORED next to this file so it ships in the GC container; also add
@@ -1369,9 +1381,12 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                     )
                 )
             )
-            if (_a1_progressive or _split_aware_rf) and int(_aff.shape[0]) != 9:
+            if (
+                _a1_progressive or _split_aware_rf or _guarded_seed
+            ) and int(_aff.shape[0]) != 9:
                 raise RuntimeError(
-                    "progressive/split-aware decode requires exactly 9 affinity "
+                    "progressive/split-aware/guarded decode requires exactly 9 "
+                    "affinity "
                     f"channels, got {_aff.shape}"
                 )
             # [13ch raw dump] 4 ABBC softmax + 9 affinity sigmoid -> enables OFFLINE decode/fusion
@@ -1385,7 +1400,63 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
             if os.environ.get("PENGWIN_AFF_STATS", "0") == "1":
                 _sh = _aff[:3]  # short-range channels
                 log(f"[aff:{anatomy}] all: mean={float(_aff.mean()):.3f} frac<0.5={float((_aff<0.5).mean()):.4f} | short: mean={float(_sh.mean()):.3f} frac<0.5={float((_sh<0.5).mean()):.4f} min={float(_sh.min()):.3f}")
-            if _split_aware_rf:
+            if _guarded_seed:
+                if _fusion or _a1_progressive or _split_aware_rf:
+                    raise RuntimeError(
+                        "guarded-seed, split-aware RF, A1 progressive, and "
+                        "fusion decoders are mutually exclusive"
+                    )
+                from abbc_conservative_refine_decode import (
+                    refine_instances_conservatively,
+                )
+
+                # Safe base: exact v3.5 one-voxel affinity decoder.
+                _v35_pp = decode_affinity_agglo(
+                    _abbc,
+                    _aff,
+                    T=float(os.environ.get("PENGWIN_AGGLO_T", "0.75")),
+                    min_vox=250,
+                )
+                decoded_pp, _guarded_report = refine_instances_conservatively(
+                    _v35_pp,
+                    _abbc,
+                    _aff,
+                    preprocessed_spacing_zyx=tuple(
+                        float(value) for value in ds538_data_props["spacing"]
+                    ),
+                    split_passes=2,
+                    relative_error_threshold=0.10,
+                    absolute_error_threshold=100,
+                    min_split_piece_mm3=1000.0,
+                    min_core_voxels_per_piece=50,
+                    split_affinity_separation_threshold=0.50,
+                    split_affinity_required_ranges=3,
+                    enable_small_candidate_branch=False,
+                    split_dilation_radius=3,
+                    max_split_dilations=10,
+                    adjacency_radius=2,
+                    interface_radius=3,
+                    # Disable every post-split hard merge. This is the exact
+                    # evaluated guarded-seed configuration.
+                    hard_merge_margin=1.0e9,
+                    return_report=True,
+                )
+                if int(_guarded_report["accepted_hard_merges"]) != 0:
+                    raise RuntimeError(
+                        "guarded-seed invariant violated: hard merge accepted"
+                    )
+                if not np.array_equal(decoded_pp > 0, _v35_pp > 0):
+                    raise RuntimeError(
+                        "guarded-seed invariant violated: foreground support changed"
+                    )
+                log(
+                    f"[v3.6.2-guarded:{anatomy}] base="
+                    f"{_guarded_report['initial_fragments']} accepted_splits="
+                    f"{_guarded_report['accepted_splits']} output="
+                    f"{_guarded_report['output_fragments']} hard_merges=0 "
+                    "affinity_ranges=3/3"
+                )
+            elif _split_aware_rf:
                 if _fusion or _a1_progressive:
                     raise RuntimeError(
                         "split-aware RF, A1 progressive, and fusion decoders are "
