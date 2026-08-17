@@ -1,14 +1,14 @@
-# PENGWIN Task 1 v3.6.2 — Guarded-Seed Recovery
+# PENGWIN Task 1 v3.6.3 — Guarded Seed + Stage-1 Fill
 
 Algorithm Description · 2026-08-17
 
 # 1. Submission status
 
-`v3.6.2-guarded-seed` is a separate upload candidate. It retains the v3.5
+`v3.6.3-guarded-seed-stage1-fill` is a separate upload candidate. It retains the v3.5
 Stage-A model, hybrid random-forest family router, largest-component ROI policy,
-anatomy-specific Stage-B experts, and all neural-network weights. Stage-1 fill,
-the v3.6 A1 decoder, and the v3.6.1 split-candidate RF are disabled. Only the
-validated deterministic guarded-seed refinement is enabled.
+anatomy-specific Stage-B experts, and all neural-network weights. The v3.6 A1
+decoder and v3.6.1 split-candidate RF are disabled. The validated deterministic
+guarded-seed refinement and Stage-1 instance-support fill are enabled.
 
 # 2. Method overview
 
@@ -29,7 +29,11 @@ femoral fractures with a serial two-stage STU-Net-B cascade:
    least 1,000 mm3, each contains at least 50 Core voxels, and all three
    affinity ranges provide separating evidence. At most two refinement passes
    are run. Post-split hard merging is disabled.
-6. **Assembly.** Foreground support is unchanged and instances use the official
+6. **Stage-1 support fill.** Within each 26-connected Stage-1 anatomy component,
+   empty Stage-1 voxels are assigned to the nearest existing Stage-2 instance
+   by watershed. Existing Stage-2 support and other anatomies are never
+   overwritten. A component with no Stage-2 marker remains empty.
+7. **Assembly.** Instances use the official
    ranges: sacrum 1-50, left hip 51-100, right hip 101-150 and femur 151-200.
 
 # 3. Frozen deployment contract
@@ -48,10 +52,10 @@ femoral fractures with a serial two-stage STU-Net-B cascade:
 | Minimum Core support | 50 voxels on each side |
 | Affinity agreement | separating evidence from 3/3 ranges: 1, 3 and 9 voxels |
 | Post-split hard merge | disabled |
-| Stage-1 fill | disabled |
+| Stage-1 fill | enabled after guarded seed; 26-connectivity; no distance cap |
 
 The model archive is byte-identical to v3.5. No new learned parameters or RF
-artifact are added for v3.6.2.
+artifact are added for v3.6.3.
 
 # 4. Model archive layout
 
@@ -77,30 +81,35 @@ official-aligned local proxy. It is not a hidden-test leaderboard score.
 | Decoder | Dice | HD95 mm | ASSD mm | Recall | Precision | F1 | Merge | Split | Topology |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | v3.5 safe base | 0.855651 | 6.687490 | 1.852238 | 0.931412 | **0.932197** | 0.916377 | 21 | **330** | **0.307585** |
-| **v3.6.2 guarded seed** | **0.862738** | **6.358605** | **1.765682** | **0.937725** | 0.930934 | **0.920165** | **20** | 337 | 0.301272 |
+| v3.6.2 guarded seed | 0.862738 | 6.358605 | 1.765682 | **0.937725** | 0.930934 | **0.920165** | 20 | 337 | 0.301272 |
+| **v3.6.3 + Stage-1 fill** | **0.865624** | **6.261985** | **1.720753** | 0.936643 | 0.930934 | 0.919362 | **19** | 340 | 0.300325 |
 
-Guarded seed improves overlap, both surface distances, Recall, Instance F1 and
-Merge while increasing Split by seven. Recall for 1-5 cm3 GT fragments remains
-32/53; recall for fragments at least 5 cm3 improves from 257/267 to 259/267.
+The combined method improves overlap, both surface distances, Recall, Instance
+F1 and Merge over v3.5. Relative to v3.6.2 guarded seed alone, it improves
+Dice/HD95/ASSD and Merge, while F1 is slightly lower. Recall for 1-5 cm3 GT
+fragments changes from 32/53 to 31/53; recall for fragments at least 5 cm3
+remains 259/267. Split increases from 337 to 340.
 
 # 6. Reproducibility and limitations
 
 - The guarded-seed parameters above are the exact configuration evaluated on
   the frozen local arrays.
-- Runtime checks fail fast if fewer than nine affinity channels are present, if
-  any hard merge is accepted, or if foreground support changes.
+- Runtime checks fail fast if fewer than nine affinity channels are present,
+  if any hard merge is accepted, or if Stage-1 fill changes the instance count.
+- Fill can only add support inside the routed post-largest-component Stage-1
+  mask; it does not clip existing Stage-2 support or create marker-free objects.
 - The local proxy was used to compare decoder variants, so its results may be
   optimistic. Hidden-test generalization must be established by submission.
-- Stage-1 support fill is deliberately disabled because it reduced 1-5 cm3
-  fragment recall from 32/53 to 31/53 despite improving geometry metrics.
+- Stage-1 support fill has a measured trade-off: it reduces 1-5 cm3 fragment
+  recall by one object and adds three split errors despite improving geometry.
 - The 10-minute platform runtime and non-root execution must be checked before
   activation.
 
 # 7. Runtime and licensing
 
 The image targets an NVIDIA T4 16 GiB GPU. Stage A and each Stage-B expert are
-loaded serially; guarded-seed refinement is deterministic CPU post-processing
-inside each anatomy crop. STU-Net-B and nnU-Net are used under their respective
+loaded serially; guarded-seed refinement and Stage-1 fill are deterministic CPU
+post-processing. STU-Net-B and nnU-Net are used under their respective
 open-source licenses; Stage-B initialization derives from the official
 TotalSegmentator `base_ep4k` checkpoint.
 

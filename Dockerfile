@@ -76,7 +76,7 @@ ENV PENGWIN_ROOT=/opt/ml/model \
     MPLCONFIGDIR=/tmp/matplotlib \
     XDG_CACHE_HOME=/tmp/.cache
 
-# [v3.6.2 candidate = v3.5 safe base + guarded-seed recovery]
+# [v3.6.3 candidate = guarded-seed recovery + Stage-1 instance fill]
 # Stage-A and the hybrid family router stay fixed. Every routed Stage-B anatomy
 # uses its epoch-3 specialist (Sacrum, shared Left/Right Hip, or Femur), all
 # initialized from the v3.4 TotalSegmentator-base V308 checkpoint. The unified
@@ -93,6 +93,7 @@ ENV PENGWIN_DS539_TRAINER=PengwinTrainerSTUNetBaseAnatomyV301 \
     PENGWIN_A1_PROGRESSIVE_DECODE=0 \
     PENGWIN_SPLIT_AWARE_RF_DECODE=0 \
     PENGWIN_GUARDED_SEED_DECODE=1 \
+    PENGWIN_STAGE1_INSTANCE_FILL=1 \
     PENGWIN_AGGLO_T=0.75 \
     PENGWIN_FUSION_DECODE=0 \
     PENGWIN_STAGEA_BONE_RECONCILE=0 \

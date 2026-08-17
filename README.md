@@ -14,27 +14,34 @@
 
 ---
 
-## 🧪 업로드 후보 — v3.6.2 Guarded seed recovery
+## 🧪 업로드 후보 — v3.6.3 Guarded seed + Stage1 fill
 
-> v3.6.2는 v3.5의 Stage A, hybrid family RF 라우터, largest-CC ROI,
-> anatomy expert와 모든 신경망 가중치를 그대로 사용한다. Stage1 fill과
-> v3.6.1 split-candidate RF는 끄고, 검증된 Guarded seed 디코더만 적용한다.
+> v3.6.3은 v3.6.2의 Guarded seed 결과 뒤에서, Stage1이 뼈라고 찾았지만
+> Stage2가 비워 둔 영역을 가장 가까운 기존 골편 ID로 채운다. Stage A,
+> hybrid family RF 라우터, largest-CC ROI, anatomy expert와 모든 신경망
+> 가중치는 v3.5와 동일하다.
 
 먼저 v3.5의 1-voxel affinity 결과를 만든다. 그 안에서 ABBC Boundary가
 제안한 이진 분할은 양쪽에 Core가 50 voxel 이상 존재하고 1·3·9 voxel
 Affinity 세 거리 범위가 모두 분리에 동의할 때만 적용한다. 각 결과 조각은
 1,000 mm³ 이상이어야 하며, 후속 hard merge는 완전히 비활성화한다.
-따라서 합의가 없는 인스턴스와 foreground support는 v3.5 그대로 유지된다.
+따라서 합의가 없는 인스턴스는 v3.5 그대로 유지된다. 그 다음 Stage1 fill은
+26-connected Stage1 성분 안에 이미 존재하는 Stage2 골편만 seed로 사용해 빈
+복셀을 nearest-instance watershed로 배정한다. 기존 Stage2 복셀이나 다른
+해부학 라벨은 덮어쓰지 않고, seed가 전혀 없는 성분에는 새 골편을 만들지 않는다.
 
 | Decoder | Dice | HD95 mm ↓ | ASSD mm ↓ | Recall | Precision | F1 | Merge ↓ | Split ↓ | Topology |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | v3.5 | 0.855651 | 6.687490 | 1.852238 | 0.931412 | **0.932197** | 0.916377 | 21 | **330** | **0.307585** |
-| **v3.6.2 Guarded seed** | **0.862738** | **6.358605** | **1.765682** | **0.937725** | 0.930934 | **0.920165** | **20** | 337 | 0.301272 |
+| v3.6.2 Guarded seed | 0.862738 | 6.358605 | 1.765682 | **0.937725** | 0.930934 | **0.920165** | 20 | 337 | 0.301272 |
+| **v3.6.3 + Stage1 fill** | **0.865624** | **6.261985** | **1.720753** | 0.936643 | 0.930934 | 0.919362 | **19** | 340 | 0.300325 |
 
 위 수치는 동일한 frozen 68-case / 132-anatomy official-aligned local proxy이며
 hidden-test 점수가 아니다. v3.5 대비 Dice, 표면 거리, Recall, F1과 Merge가
-함께 좋아졌고 작은 골편 1–5 cm³ recall은 32/53으로 유지됐다. 모델 archive는
-v3.5와 byte-identical하며 새 학습 모델이나 RF artifact가 필요하지 않다.
+함께 좋아졌다. v3.6.2보다 Dice/HD95/ASSD와 Merge는 좋아지지만, 작은 골편
+1–5 cm³ recall은 32/53에서 31/53으로 한 개 낮고 Split은 337에서 340으로
+늘어난다. 따라서 공식 hidden test에서 일반화를 확인할 별도 후보이며 기존
+v3.6.2는 rollback용으로 유지한다. 모델 archive는 v3.5와 byte-identical하다.
 
 ---
 
